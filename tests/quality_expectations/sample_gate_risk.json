@@ -1,0 +1,23 @@
+{
+  "expected_decision_terms": [
+    "Decision"
+  ],
+  "expected_forbidden_claim_terms": [
+    "do not index secrets"
+  ],
+  "expected_gate_terms": [
+    "MCP0 gate passed"
+  ],
+  "expected_risk_terms": [
+    "Risk"
+  ],
+  "forbidden_secret_terms_absent": [
+    "API_KEY=secret",
+    "private-key-material",
+    "should_not_appear"
+  ],
+  "max_bytes": 12000,
+  "name": "sample_project_gate_risk",
+  "project": "fixtures/sample_project",
+  "query": "decision gate risk do not index secrets"
+}

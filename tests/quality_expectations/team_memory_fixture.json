@@ -1,0 +1,23 @@
+{
+  "expected_decision_terms": [
+    "Decision"
+  ],
+  "expected_forbidden_claim_terms": [
+    "does not replace Git"
+  ],
+  "expected_gate_terms": [
+    "gates"
+  ],
+  "expected_risk_terms": [
+    "secrets"
+  ],
+  "forbidden_secret_terms_absent": [
+    "API_KEY=secret",
+    "private-key-material",
+    "should_not_appear"
+  ],
+  "max_bytes": 12000,
+  "name": "team_memory_fixture",
+  "project": ".",
+  "query": "team memory decisions gates secrets does not replace Git"
+}

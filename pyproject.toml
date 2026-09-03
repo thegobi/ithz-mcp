@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ithz-mcp"
+version = "0.1.0a14"
+description = "Local-first project memory with evidence-aware MCP36.4 canary governance for AI coding agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "agent-memory",
+    "coding-agents",
+    "project-memory",
+    "local-first",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development",
+    "Topic :: Text Processing :: Indexing",
+]
+
+[project.urls]
+Homepage = "https://ithz.dev/mcp/"
+Source = "https://github.com/thegobi/ithz-mcp"
+Issues = "https://github.com/thegobi/ithz-mcp/issues"
+
+[project.scripts]
+ithz-mcp = "ithz_mcp.cli:main"
+ithz_mcp = "ithz_mcp.cli:main"
+ccg-ithz = "ithz_mcp.ccg.cli:main"
+ccg-ithz-mcp = "ithz_mcp.ccg.mcp_server:main"
+ccg-ithz-settings = "ithz_mcp.ccg.settings_server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ithz_mcp = ["assets/*.svg"]

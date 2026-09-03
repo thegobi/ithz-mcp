@@ -1,0 +1,23 @@
+{
+  "expected_decision_terms": [
+    "Decision"
+  ],
+  "expected_forbidden_claim_terms": [
+    "no Git replacement"
+  ],
+  "expected_gate_terms": [
+    "Gate"
+  ],
+  "expected_risk_terms": [
+    "Risk"
+  ],
+  "forbidden_secret_terms_absent": [
+    "super_secret",
+    "private-key-material",
+    "should_not_appear"
+  ],
+  "max_bytes": 12000,
+  "name": "markdown_heavy_fixture",
+  "project": "fixtures/mcp8/fixture_mixed_docs_project",
+  "query": "decision gate risk no Git replacement"
+}

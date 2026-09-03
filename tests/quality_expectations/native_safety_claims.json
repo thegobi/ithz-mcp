@@ -1,0 +1,23 @@
+{
+  "expected_decision_terms": [
+    "no general ZIP"
+  ],
+  "expected_forbidden_claim_terms": [
+    "no general ZIP"
+  ],
+  "expected_gate_terms": [
+    "passed"
+  ],
+  "expected_risk_terms": [
+    "safety"
+  ],
+  "forbidden_secret_terms_absent": [
+    "API_KEY=secret",
+    "private-key-material",
+    "should_not_appear"
+  ],
+  "max_bytes": 20000,
+  "name": "native_safety_claims",
+  "native": true,
+  "query": "What does P10 safety protect and which claims are forbidden?"
+}
