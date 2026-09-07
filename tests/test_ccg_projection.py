@@ -27,7 +27,8 @@ class CCGCurrentProjectionTests(unittest.TestCase):
         invalid = {"event_id": "invalid", "sequence": 2, "supersedes": ["typed"]}
         active, superseded = _active_events([typed, invalid])
         self.assertEqual(superseded, set())
-        self.assertEqual({event["event_id"] for event in active}, {"typed", "invalid"})
+        # An incomplete legacy typed record is retained in history, never active.
+        self.assertEqual({event["event_id"] for event in active}, {"invalid"})
 
         valid = {
             "event_id": "valid",
@@ -40,7 +41,7 @@ class CCGCurrentProjectionTests(unittest.TestCase):
             },
         }
         active, superseded = _active_events([typed, valid])
-        self.assertEqual(superseded, {"typed"})
+        self.assertEqual(superseded, set())
         self.assertEqual([event["event_id"] for event in active], ["valid"])
 
     def test_projection_is_compact_current_only_and_carries_safety_boundaries(self):
@@ -56,7 +57,7 @@ class CCGCurrentProjectionTests(unittest.TestCase):
             "current_gates": [],
             "current_risks": [],
             "must_not_break": [
-                {"event_id": "s1", "kind": "must_not_break", "text": "Never copy capability tokens."}
+                {"event_id": "s1", "kind": "must_not_break", "text": "Must not copy capability tokens."}
             ],
             "forbidden_claims": [],
             "current_next_steps": [],
@@ -70,8 +71,8 @@ class CCGCurrentProjectionTests(unittest.TestCase):
                 requested_project=directory,
             ),
         ), patch(
-            "ithz_mcp.native_archive_store._load_archive_json_optional",
-            return_value=synthesis,
+            "ithz_mcp.native_archive_store._memory_events",
+            return_value=synthesis["current_decisions"] + synthesis["must_not_break"],
         ):
             projection = native_archive_current_projection(Path(directory), "Gemini opponent", 4)
         decisions = projection["sections"]["current_decisions"]

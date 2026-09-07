@@ -379,7 +379,10 @@ def record_canary_receipt(project: Path, reservation: dict[str, Any], result: di
     if not isinstance(mirror, dict) or mirror.get("mirrored") is not False or mirror.get("reason") != "mcp36_canary_read_only":
         raise CanaryGateError("canary_postflight_ithz_mirror_boundary_failed")
     diversity = result.get("evidence_diversity_receipt")
-    if not isinstance(diversity, dict) or diversity.get("valid") is not True:
+    # A canary may honestly complete a metered process with an evidence gap; the
+    # court must then return REQUEST_EVIDENCE.  Reject only a malformed or leaky
+    # evidence-view process here, and preserve sufficiency in the receipt.
+    if not isinstance(diversity, dict) or diversity.get("structurally_valid") is not True:
         raise CanaryGateError("canary_postflight_evidence_diversity_invalid")
     slot_path = Path(str(reservation.get("slot_path", ""))).resolve()
     expected_parent = (_rollout_dir(project, str(reservation["rollout_id"])) / "slots").resolve()
@@ -397,6 +400,7 @@ def record_canary_receipt(project: Path, reservation: dict[str, Any], result: di
         "evidence_hash": result["evidence_hash"],
         "decision_material_hash": result["decision_material_hash"],
         "evidence_diversity_receipt_hash": stable_json_hash(diversity),
+        "evidence_sufficient": diversity.get("evidence_sufficient") is True,
         "final_verdict": result["final_verdict"],
         "cross_lab_quorum": True,
         "provider_usage_hash": stable_json_hash(usage),

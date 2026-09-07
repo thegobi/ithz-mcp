@@ -19,3 +19,10 @@ project.ithz
 .env
 *.key
 *.pem
+
+!fixtures/
+fixtures/*
+!fixtures/mcp36_4_retrieval_labels.json
+!experiments/
+experiments/*
+!experiments/mcp36_4_retrieval/

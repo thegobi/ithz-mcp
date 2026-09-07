@@ -94,7 +94,9 @@ class MemoryIntegrityTests(unittest.TestCase):
 
     def test_role_views_are_distinct_and_cross_lab_is_raw_first(self):
         compiled = build_evidence_views(self.projection())
-        self.assertTrue(compiled["diversity_receipt"]["valid"])
+        self.assertTrue(compiled["diversity_receipt"]["structurally_valid"])
+        self.assertFalse(compiled["diversity_receipt"]["valid"])
+        self.assertFalse(compiled["diversity_receipt"]["claim_bindings_complete"])
         cross = compiled["views"]["opponent_cross"]
         self.assertEqual(cross["verified_abstractions"], [])
         self.assertTrue(cross["shared_current_projection_withheld"])
@@ -114,6 +116,40 @@ class MemoryIntegrityTests(unittest.TestCase):
         self.assertNotIn("ithz_projection_delta", cross)
         self.assertEqual(cross["role_evidence_view"]["purpose"], "raw_first_memory_disabled_control")
 
+    def test_cross_packet_removes_nested_projection_and_routing_profile(self):
+        compiled = build_evidence_views(self.projection())
+        evidence = {
+            "evidence_hash": "a" * 64,
+            "decision_material": {"review_profile": {"ithz_current_projection": self.projection(), "codex_model": "hidden"}},
+            "evidence_views": compiled,
+        }
+        cross = sealed_evidence_for_role(evidence, "opponent_cross")
+        self.assertNotIn("decision_material", cross)
+        self.assertNotIn("ithz_current_projection", str(cross))
+
+    def test_empty_views_are_structurally_honest_but_not_sufficient(self):
+        compiled = build_evidence_views({"sections": {}})
+        receipt = compiled["diversity_receipt"]
+        self.assertTrue(receipt["structurally_valid"])
+        self.assertFalse(receipt["evidence_sufficient"])
+        self.assertFalse(receipt["required_policy_coverage"])
+        self.assertFalse(receipt["valid"])
+
+    def test_claims_bind_only_their_named_raw_sources_and_content_hash_ignores_order(self):
+        projection = self.projection()
+        projection["sections"]["current_decisions"] = [{
+            "event_id": "decision",
+            "text": "Use verified evidence.",
+            "source_event_ids": ["gate"],
+        }]
+        first = build_evidence_views(projection)
+        projection["sections"]["current_risks"].reverse()
+        second = build_evidence_views(projection)
+        row = first["views"]["judge"]["claim_evidence_matrix"][0]
+        self.assertEqual(row["raw_evidence_ids"], ["gate"])
+        self.assertTrue(row["binding_complete"])
+        self.assertEqual(first["evidence_content_hashes"], second["evidence_content_hashes"])
+
     def test_benchmark_covers_all_memory_modes(self):
         result = run_memory_integrity_benchmark()
         self.assertTrue(result["passed"])
@@ -123,7 +159,7 @@ class MemoryIntegrityTests(unittest.TestCase):
             {"no_memory", "episodic_only", "mcp35_projection", "mcp36_hybrid", "mcp36_poisoned"},
         )
 
-    def test_append_memory_record_activates_bound_candidate(self):
+    def test_append_memory_record_does_not_activate_merely_bound_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             archive = root / "project.ithz"
@@ -151,11 +187,11 @@ class MemoryIntegrityTests(unittest.TestCase):
                 return_value=appended,
             ) as write:
                 receipt = archive_append_memory_record(root, self.record())
-            self.assertTrue(receipt["accepted"])
+            self.assertFalse(receipt["accepted"])
             event_spec = write.call_args.args[1][0]
             self.assertEqual(write.call_args.args[3], "current")
-            self.assertEqual(event_spec["kind"], "decision")
-            self.assertEqual(event_spec["metadata"]["memory_record"]["verification_state"], "active")
+            self.assertEqual(event_spec["kind"], "memory_candidate_quarantined")
+            self.assertEqual(event_spec["metadata"]["memory_record"]["verification_state"], "quarantined")
 
     def test_append_memory_record_quarantines_invalid_supersession_without_deactivating_target(self):
         with tempfile.TemporaryDirectory() as directory:

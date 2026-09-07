@@ -19,11 +19,20 @@ from .memory_v2 import (
 )
 from .safety import is_secret_like, redaction_block_reason
 from .scoring import classify_text, query_terms
+from .retrieval import EmbeddingProvider, ProviderIdentity, annotate_policy_lanes, rrf_fuse, validate_vectors
 
 
 RAG_SCHEMA = "ithz_mcp_local_rag_index_v1"
 RAG_PACK_SCHEMA = "ithz_mcp_local_rag_pack_v1"
 DEFAULT_DIMENSIONS = 256
+DEFAULT_PROVIDER_IDENTITY = ProviderIdentity(
+    backend="local_feature_hashing_v1",
+    model="feature_hashing",
+    model_revision="builtin",
+    tokenizer="ithz_mcp_tokenize_v1",
+    normalization="scoring.normalize_text_v1",
+    dimension=DEFAULT_DIMENSIONS,
+)
 
 
 def rag_index_path(project: Path) -> Path:
@@ -62,6 +71,29 @@ def _cosine_sparse(left: dict[str, float], right: dict[str, float]) -> float:
     return sum(value * right.get(key, 0.0) for key, value in left.items())
 
 
+def _provider_identity(value: Any, dimensions: int) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("provider identity must be an object")
+    required = ("backend", "model", "model_revision", "tokenizer", "normalization")
+    if any(not isinstance(value.get(key), str) or not value[key].strip() for key in required):
+        raise ValueError("provider identity fields must be nonempty strings")
+    if isinstance(value.get("dimension"), bool) or not isinstance(value.get("dimension"), int) or value["dimension"] <= 0 or value["dimension"] != dimensions:
+        raise ValueError("provider identity dimension mismatch")
+    return {key: value[key] for key in (*required, "dimension")}
+
+
+def _normalized_provider_vector(vector: Any, dimensions: int) -> dict[str, float]:
+    if not isinstance(vector, (list, tuple)) or len(vector) != dimensions:
+        raise ValueError("provider vector shape invalid")
+    values = [float(value) for value in vector]
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("provider vector nonfinite")
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm <= 0:
+        raise ValueError("provider vector zero norm")
+    return {str(index): round(value / norm, 8) for index, value in enumerate(values) if value != 0.0}
+
+
 def _safe_index_units(project: Path, write_index: bool = True) -> dict[str, Any]:
     index = build_index(project) if write_index else load_index_readonly(project)
     units = _safe_units(list(index.get("units", [])))
@@ -72,20 +104,34 @@ def _safe_index_units(project: Path, write_index: bool = True) -> dict[str, Any]
     }
 
 
-def build_rag_index(project: Path, dimensions: int = DEFAULT_DIMENSIONS, out: Path | None = None, loaded: dict[str, Any] | None = None, write_index: bool = True) -> dict[str, Any]:
+def build_rag_index(project: Path, dimensions: int = DEFAULT_DIMENSIONS, out: Path | None = None, loaded: dict[str, Any] | None = None, write_index: bool = True, provider: EmbeddingProvider | None = None) -> dict[str, Any]:
     project = project.resolve()
     start = time.perf_counter()
     loaded = loaded or _safe_index_units(project, write_index=write_index)
-    graph = build_memory_graph(loaded["units"])
+    safe_units = _safe_units(list(loaded.get("units", [])))
+    graph = build_memory_graph(safe_units)
     rows: list[dict[str, Any]] = []
-    for unit in loaded["units"]:
+    provider_error = None
+    provider_vectors = None
+    provider_identity = {**DEFAULT_PROVIDER_IDENTITY.as_dict(), "dimension": dimensions}
+    if provider is not None:
+        try:
+            provider_identity = _provider_identity(provider.identity, dimensions)
+            candidate_vectors = provider.embed([str(u.get("path", "")) + " " + str(u.get("kind", "")) + " " + str(u.get("text", "")) for u in safe_units])
+            if not validate_vectors(candidate_vectors, len(safe_units), dimensions):
+                raise ValueError("provider returned malformed vectors")
+            provider_vectors = candidate_vectors
+        except Exception as exc:  # optional providers must fail closed to deterministic fallback
+            provider_error = type(exc).__name__ + ": " + str(exc)
+            provider_identity = {**DEFAULT_PROVIDER_IDENTITY.as_dict(), "dimension": dimensions}
+    for unit_index, unit in enumerate(safe_units):
         path = str(unit.get("path", ""))
         text = str(unit.get("text", ""))
         if is_secret_like(path) or redaction_block_reason(text):
             continue
         kind = str(unit.get("kind", "line"))
         features = _feature_terms(path + " " + kind + " " + text)
-        vector = _vectorize(features, dimensions)
+        vector = (_normalized_provider_vector(provider_vectors[unit_index], dimensions) if provider_vectors is not None else _vectorize(features, dimensions))
         if not vector:
             continue
         categories = classify_text(text, path, kind).get("categories", [])
@@ -97,6 +143,7 @@ def build_rag_index(project: Path, dimensions: int = DEFAULT_DIMENSIONS, out: Pa
                 "kind": kind,
                 "text": text[:500],
                 "categories": categories,
+                **{key: unit[key] for key in ("status", "verification_state", "valid_from", "valid_until", "scope") if key in unit},
                 "features": sorted(set(features))[:32],
                 "vector": vector,
             }
@@ -105,7 +152,8 @@ def build_rag_index(project: Path, dimensions: int = DEFAULT_DIMENSIONS, out: Pa
         "schema": RAG_SCHEMA,
         "project": str(project),
         "dimensions": dimensions,
-        "embedding_backend": "local_feature_hashing_v1",
+        "embedding_backend": provider_identity["backend"],
+        "embedding_identity": provider_identity,
         "source_index_hash": loaded.get("index_hash"),
         "project_semantic_hash": loaded.get("project_semantic_hash"),
         "graph_hash": graph.get("graph_hash"),
@@ -117,11 +165,15 @@ def build_rag_index(project: Path, dimensions: int = DEFAULT_DIMENSIONS, out: Pa
             "schema": rag["schema"],
             "dimensions": rag["dimensions"],
             "embedding_backend": rag["embedding_backend"],
+            "embedding_identity": rag["embedding_identity"],
             "source_index_hash": rag["source_index_hash"],
             "units": rag["units"],
         }
     )
     rag["build_ms"] = int((time.perf_counter() - start) * 1000)
+    if provider_error:
+        rag["provider_fallback"] = True
+        rag["provider_error"] = provider_error
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(dump_pretty(rag), encoding="utf-8")
@@ -141,12 +193,22 @@ def load_rag_index(project: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) and loaded.get("schema") == RAG_SCHEMA else None
 
 
-def ensure_rag_index(project: Path, dimensions: int = DEFAULT_DIMENSIONS, rebuild: bool = False, write_cache: bool = True, loaded: dict[str, Any] | None = None, write_index: bool = True) -> dict[str, Any]:
+def ensure_rag_index(project: Path, dimensions: int = DEFAULT_DIMENSIONS, rebuild: bool = False, write_cache: bool = True, loaded: dict[str, Any] | None = None, write_index: bool = True, provider: EmbeddingProvider | None = None) -> dict[str, Any]:
     project = project.resolve()
+    if loaded is None:
+        loaded = _safe_index_units(project, write_index=write_index)
     cached = None if rebuild else load_rag_index(project)
-    if cached:
+    expected_source = loaded.get("index_hash") if loaded else None
+    cache_identity = cached.get("embedding_identity", {}) if cached else {}
+    expected_identity = {**DEFAULT_PROVIDER_IDENTITY.as_dict(), "dimension": dimensions}
+    if provider is not None:
+        try:
+            expected_identity = dict(provider.identity)
+        except Exception:
+            expected_identity = {"backend": "__invalid_provider__"}
+    if cached and int(cached.get("dimensions", 0)) == int(dimensions) and cache_identity == expected_identity and expected_source and cached.get("source_index_hash") == expected_source:
         return {**cached, "cache_status": "hit"}
-    built = build_rag_index(project, dimensions, rag_index_path(project) if write_cache else None, loaded=loaded, write_index=write_index)
+    built = build_rag_index(project, dimensions, rag_index_path(project) if write_cache else None, loaded=loaded, write_index=write_index, provider=provider)
     return {**built, "cache_status": "rebuilt"}
 
 
@@ -171,13 +233,28 @@ def rag_status(project: Path) -> dict[str, Any]:
         "unit_count": cached.get("unit_count"),
         "dimensions": cached.get("dimensions"),
         "embedding_backend": cached.get("embedding_backend"),
+        "embedding_identity": cached.get("embedding_identity"),
     }
 
 
-def rag_search(project: Path, query: str, limit: int = 12, rebuild: bool = False, dimensions: int = DEFAULT_DIMENSIONS, write_cache: bool = True, loaded: dict[str, Any] | None = None, write_index: bool = True) -> dict[str, Any]:
+def rag_search(project: Path, query: str, limit: int = 12, rebuild: bool = False, dimensions: int = DEFAULT_DIMENSIONS, write_cache: bool = True, loaded: dict[str, Any] | None = None, write_index: bool = True, provider: EmbeddingProvider | None = None) -> dict[str, Any]:
     start = time.perf_counter()
-    index = ensure_rag_index(project, dimensions, rebuild, write_cache, loaded=loaded, write_index=write_index)
-    query_vec = _vectorize(_feature_terms(query), int(index.get("dimensions", dimensions)))
+    index = ensure_rag_index(project, dimensions, rebuild, write_cache, loaded=loaded, write_index=write_index, provider=provider)
+    # Never query an optional provider against a deterministic fallback index:
+    # the vectors occupy incompatible spaces even if the provider is available now.
+    if provider is not None and index.get("embedding_backend") != "local_feature_hashing_v1":
+        try:
+            query_vectors = provider.embed([query])
+            if not validate_vectors(query_vectors, 1, int(index.get("dimensions", dimensions))):
+                raise ValueError("provider returned malformed query vector")
+            query_vec = _normalized_provider_vector(query_vectors[0], int(index.get("dimensions", dimensions)))
+        except Exception:
+            # A provider failure cannot rank across incompatible spaces.
+            if index.get("embedding_backend") != "local_feature_hashing_v1":
+                return rag_search(project, query, limit, rebuild=True, dimensions=dimensions, write_cache=write_cache, loaded=loaded, write_index=write_index, provider=None)
+            query_vec = _vectorize(_feature_terms(query), int(index.get("dimensions", dimensions)))
+    else:
+        query_vec = _vectorize(_feature_terms(query), int(index.get("dimensions", dimensions)))
     q_terms = set(query_terms(query)) | set(_tokenize(query))
     rows = []
     for unit in index.get("units", []):
@@ -202,6 +279,7 @@ def rag_search(project: Path, query: str, limit: int = 12, rebuild: bool = False
         score = vector_score + category_boost
         rows.append(
             {
+                "id": unit.get("id"),
                 "path": path,
                 "line": int(unit.get("line", 0)),
                 "kind": unit.get("kind", "line"),
@@ -212,10 +290,23 @@ def rag_search(project: Path, query: str, limit: int = 12, rebuild: bool = False
                 "category_boost": round(category_boost, 6),
                 "matched_terms": matched,
                 "why_selected": ["local_vector_similarity"] + (["category_boost"] if category_boost else []),
+                **{key: unit[key] for key in ("status", "verification_state", "valid_from", "valid_until", "scope") if key in unit},
             }
         )
     rows.sort(key=lambda row: (-float(row["score"]), row["path"], row["line"], row["text"]))
-    selected = rows[:limit]
+    selected = annotate_policy_lanes(rows)[:limit]
+    # Policy lanes are intentionally evaluated independently of similarity;
+    # they must never become ordinary zero-score "matches".
+    # Policy extraction uses source units rather than vector rows. A policy
+    # with no lexical features or a rejected optional embedding is still a
+    # policy row, never a fabricated similarity match.
+    policy_source = _safe_units(list(loaded.get("units", []))) if isinstance(loaded, dict) else _safe_index_units(project, write_index=write_index)["units"]
+    all_tagged = annotate_policy_lanes(policy_source)
+    lane_rows = {
+        "warning_history": [row for row in all_tagged if row.get("policy_lane") == "warning_history"][:limit],
+        "mandatory_hard_policy": [row for row in all_tagged if row.get("policy_lane") == "mandatory_hard_policy"][:limit],
+        "blocking_conflict": [row for row in all_tagged if row.get("policy_lane") == "blocking_conflict"][:limit],
+    }
     return {
         "schema": "ithz_mcp_rag_search_v1",
         "project": str(project.resolve()),
@@ -225,7 +316,9 @@ def rag_search(project: Path, query: str, limit: int = 12, rebuild: bool = False
         "embedding_backend": index.get("embedding_backend"),
         "cache_status": index.get("cache_status", "unknown"),
         "rows": selected,
+        "policy_rows": lane_rows,
         "row_count": len(selected),
+        "no_answer": not selected,
         "search_ms": int((time.perf_counter() - start) * 1000),
     }
 
@@ -238,6 +331,7 @@ def compile_rag_context_pack(project: Path, query: str, max_bytes: int = 16000, 
     graph = build_memory_graph(loaded["units"])
     deterministic = deterministic_candidates(loaded["units"], query, 12)
     hybrid = hybrid_candidates(loaded["units"], query, graph, 12)
+    policy_rows = search.get("policy_rows", {})
     pack_hash = stable_json_hash(
         {
             "schema": RAG_PACK_SCHEMA,
@@ -251,6 +345,7 @@ def compile_rag_context_pack(project: Path, query: str, max_bytes: int = 16000, 
                 {"path": row.get("path"), "line": row.get("line"), "text": row.get("text"), "score": row.get("score")}
                 for row in hybrid
             ],
+            "policy_rows": policy_rows,
         }
     )
     lines = [
@@ -263,21 +358,18 @@ def compile_rag_context_pack(project: Path, query: str, max_bytes: int = 16000, 
         f"- embedding_backend: {search.get('embedding_backend')}",
         f"- cache_status: {search.get('cache_status')}",
         "",
-        "## Hybrid RAG Evidence",
+        "## Mandatory and Conflict Context",
     ]
-    combined: dict[str, dict[str, Any]] = {}
-    for row in search.get("rows", []):
-        key = f"{row.get('path')}:{row.get('line')}:{row.get('kind')}"
-        combined[key] = {**row, "retrieval_modes": ["rag_vector"]}
-    for row in hybrid:
-        key = f"{row.get('path')}:{row.get('line')}:{row.get('kind')}"
-        if key in combined:
-            combined[key]["score"] = round(float(combined[key].get("score", 0)) + (float(row.get("score", 0)) / 100.0), 6)
-            combined[key]["retrieval_modes"] = sorted(set(combined[key].get("retrieval_modes", []) + ["memory_v2"]))
-        else:
-            combined[key] = {**row, "retrieval_modes": ["memory_v2"], "vector_score": 0.0}
-    ranked = list(combined.values())
-    ranked.sort(key=lambda row: (-float(row.get("score", 0)), row.get("path", ""), int(row.get("line", 0)), row.get("text", "")))
+    policy_lines: list[str] = []
+    for lane, label in (("mandatory_hard_policy", "MANDATORY POLICY"), ("blocking_conflict", "BLOCKING CONFLICT"), ("warning_history", "HISTORICAL WARNING - NOT ACTIVE")):
+        for row in policy_rows.get(lane, [])[:8]:
+            scope_note = " scope_requires_check=true" if row.get("scope_requires_check") else ""
+            policy_lines.append(f"- [{label}]{scope_note} `{row.get('path')}:{row.get('line')}`: {str(row.get('text', ''))[:340]}")
+    if not policy_lines:
+        policy_lines.append("- No mandatory, conflict, or historical-policy rows were identified.")
+    lines.extend(policy_lines)
+    lines.extend(["", "## Hybrid RAG Evidence"])
+    ranked = rrf_fuse({"rag_vector": search.get("rows", []), "memory_v2": hybrid}, limit=24)
     if not ranked:
         lines.append("- No RAG evidence matched. Use direct source inspection or broaden the query.")
     for row in ranked[:12]:
@@ -287,7 +379,7 @@ def compile_rag_context_pack(project: Path, query: str, max_bytes: int = 16000, 
         modes = ",".join(row.get("retrieval_modes", []))
         lines.append(
             f"- `{row.get('path')}:{row.get('line')}` [{row.get('kind')}] "
-            f"score={row.get('score')} modes={modes}: {text}"
+            f"rrf_score={row.get('rrf_score')} modes={modes}: {text}"
         )
     lines.extend(["", "## Deterministic Backstop"])
     for row in deterministic[:8]:
@@ -302,6 +394,8 @@ def compile_rag_context_pack(project: Path, query: str, max_bytes: int = 16000, 
         ]
     )
     text = "\n".join(lines).rstrip() + "\n"
+    policy_bytes = len("\n".join(lines[:lines.index("## Hybrid RAG Evidence")]).encode("utf-8")) if "## Hybrid RAG Evidence" in lines else 0
+    fallback_required = policy_bytes > max_bytes
     if len(text.encode("utf-8")) > max_bytes:
         marker = "\n\n[truncated deterministically]\n"
         allowed = max(0, max_bytes - len(marker.encode("utf-8")))
@@ -316,6 +410,8 @@ def compile_rag_context_pack(project: Path, query: str, max_bytes: int = 16000, 
         "rag_index_hash": search.get("rag_index_hash"),
         "embedding_backend": search.get("embedding_backend"),
         "rag_row_count": search.get("row_count", 0),
+        "policy_rows": policy_rows,
+        "fallback_required": fallback_required,
         "selected_files": sorted({str(row.get("path", "")) for row in ranked if row.get("path")}),
         "generation_ms": int((time.perf_counter() - start) * 1000),
     }

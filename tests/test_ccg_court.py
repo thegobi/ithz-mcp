@@ -162,13 +162,35 @@ class CCGCourtTests(unittest.TestCase):
                 "off",
             )
             self.assertEqual(result["semantic_verdict"], "ALLOW_WITH_LIMITS")
-            self.assertEqual(result["final_verdict"], "HUMAN_REQUIRED")
-            self.assertIn("cross_lab_quorum_missing", result["formal_reasons"])
+            self.assertEqual(result["final_verdict"], "REQUEST_EVIDENCE")
+            self.assertIn("evidence_view_diversity_missing", result["formal_reasons"])
             self.assertIsNone(result["capability_token"])
             auditor_prompt = next(call["prompt"] for call in backend.calls if call["role"] == "auditor")
             self.assertIn("pending human approval is not by itself a process defect", auditor_prompt)
             self.assertIn('"completed_upstream_role_count": 4', auditor_prompt)
             self.assertIn('"judge_completed_before_auditor": true', auditor_prompt)
+
+    def test_optional_blind_first_pass_is_sealed_before_proposal_and_metered_as_six_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex = ScriptedBackend("codex-blind-first")
+            gemini = ScriptedBackend("gemini-blind-first")
+            gemini.provider = "google"
+            runner = CourtRunner(Path(directory), codex_backend=codex, gemini_backend=gemini)
+            result = runner.run_case(
+                "Review a bounded read-only task with an independent first pass.",
+                "low",
+                "analysis.read",
+                opponent_2="gemini",
+                blind_first_pass=True,
+            )
+            self.assertTrue(result["independent_first_pass"])
+            self.assertEqual(result["model_runs"], 6)
+            self.assertIn("opponent_blind_first", result["role_manifest"])
+            calls = codex.calls + gemini.calls
+            first = next(item for item in calls if item["role"] == "opponent_blind_first")
+            self.assertNotIn("PROPOSAL:", first["prompt"])
+            events = runner.ledger.read_case(result["case_id"], include_events=True)["events"]
+            self.assertIn("blind_first_pass_sealed", [event["event_type"] for event in events])
 
     def test_preexisting_demo_target_is_not_overwritten_and_spends_token(self):
         with tempfile.TemporaryDirectory() as directory:

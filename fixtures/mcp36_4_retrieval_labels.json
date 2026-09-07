@@ -1,0 +1,20 @@
+{
+  "schema": "ithz_mcp_mcp36_4_retrieval_labels_v1",
+  "description": "Small offline SK/EN retrieval smoke fixture; IDs are stable synthetic unit IDs.",
+  "corpus": [
+    {"path": "policy.md", "text": "Mandatory policy: zmena nesmie porusit hard policy."},
+    {"path": "gates.md", "text": "Release gate blocks publication until tests pass."},
+    {"path": "history.md", "text": "Revoked record is history only and cannot direct action.", "status": "revoked"}
+  ],
+  "split": {
+    "dev": [
+      {"query": "ktoré pravidlo nesmie porušiť zmena", "relevant_ids": ["policy.md:1:line"]},
+      {"query": "which gate blocks release", "relevant_ids": ["gates.md:1:line"]}
+    ],
+    "test": [
+      {"query": "zrušený záznam iba história", "relevant_ids": ["history.md:1:line"]},
+      {"query": "no matching retrieval item", "relevant_ids": []}
+    ]
+  },
+  "evaluation": {"metrics": ["Recall@k", "MRR", "runtime_ms"], "model_evidence": "none", "external_models": false}
+}

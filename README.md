@@ -1,10 +1,14 @@
-# ITHZ-MCP 36.4 public core
+# ITHZ-MCP 36.5 public core
 
 ITHZ-MCP is a local-first project-memory server for AI coding agents. MCP36 adds source-bound memory influence receipts, typed evidence views and deterministic safety checks. MCP36.4 adds an explicitly enabled, bounded shadow canary for evaluating those controls before they are trusted on consequential work.
 
 This repository contains the generic public core. It intentionally excludes organization-specific constitutions and profiles, customer or participant data, private project archives, case ledgers, provider settings, credentials, logs and internal operating documents.
 
-## What MCP36.4 changes
+## What MCP36.5 changes
+
+MCP36.5 separates source binding, signed evidence support and activation authority; rechecks typed memory on read; and makes evidence sufficiency distinct from structural view isolation. Optional blind-first review takes six metered runs, while the default remains five. Retrieval gains stable rank fusion and explicit optional provider identity, without enabling a new embedding model or claiming measured quality gains. See [release notes](RELEASE_NOTES.md) and [operator trust setup](docs/MCP36_5_EVIDENCE_TRUST.md).
+
+## Retained MCP36.4 controls
 
 - Memory is treated as evidence, not truth. Retrieved records keep provenance, status and contradiction signals.
 - The system can compile role-specific evidence views and hashes instead of silently feeding the same memory to every reviewer.
@@ -13,7 +17,7 @@ This repository contains the generic public core. It intentionally excludes orga
 - Canary cases are fixed to `analysis.read`, require an independent cross-lab opponent and complete usage telemetry, mint no capability token and are not mirrored into `project.ithz`.
 - A local kill switch pauses new canary cases while preserving existing receipts.
 
-MCP36.4 remains alpha software. A passing canary is review evidence, not permission to deploy, publish, send messages, change payments or perform another external action.
+MCP36.5 remains alpha software. A passing canary is review evidence, not permission to deploy, publish, send messages, change payments or perform another external action.
 
 ## Install from the GitHub release
 
@@ -21,7 +25,7 @@ Download the wheel and `SHA256SUMS.txt` from the release, verify the checksum, t
 
 ```powershell
 py -m venv .venv
-.\.venv\Scripts\python -m pip install .\ithz_mcp-0.1.0a14-py3-none-any.whl
+.\.venv\Scripts\python -m pip install .\ithz_mcp-0.1.0a15-py3-none-any.whl
 .\.venv\Scripts\ithz-mcp version
 ```
 
@@ -29,7 +33,7 @@ Linux/macOS:
 
 ```bash
 python3 -m venv .venv
-./.venv/bin/python -m pip install ./ithz_mcp-0.1.0a14-py3-none-any.whl
+./.venv/bin/python -m pip install ./ithz_mcp-0.1.0a15-py3-none-any.whl
 ./.venv/bin/ithz-mcp version
 ```
 
@@ -54,7 +58,7 @@ Running a live multi-model court additionally depends on model-provider configur
 
 ## Upgrade
 
-Install the new wheel into a fresh virtual environment first. Existing `project.ithz` archives are not rewritten merely by installing the package. Back up the project, run the two deterministic checks above, inspect `ithz-mcp version`, then opt a low-risk project into the bounded canary. Keep the old environment available for rollback until the pilot is accepted.
+Install the new wheel into a fresh virtual environment first. Existing `project.ithz` archives are not rewritten merely by installing the package. Back up the project, run the two deterministic checks above, inspect `ithz-mcp version`, then verify the project configuration. Canary participation remains a separate, optional choice. Keep the old environment available for rollback until the pilot is accepted.
 
 The package is not a Git replacement, cloud-sync service or production database. No general token-saving claim is made.
 

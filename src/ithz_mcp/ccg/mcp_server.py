@@ -127,6 +127,7 @@ def tool_schemas() -> list[dict[str, Any]]:
                 },
                 "use_daybreak": {"type": "string", "enum": ["auto", "required", "off"], "default": "auto"},
                 "reuse_decision": {"type": "string", "enum": ["auto", "off"], "default": "auto"},
+                "blind_first_pass": {"type": "boolean", "default": False, "description": "Optional six-run raw-first pass sealed before the proposal."},
             },
             ["task", "risk", "capability"],
         ),
@@ -232,6 +233,7 @@ def call_tool(name: str, arguments: dict[str, Any], default_project: Path) -> An
             str(arguments.get("use_daybreak", "auto")),
             str(arguments.get("reuse_decision", "auto")),
             str(arguments.get("opponent_2", "auto")),
+            blind_first_pass=bool(arguments.get("blind_first_pass", False)),
         )
     if name == "ccg_run_final_case":
         task = arguments.get("task")

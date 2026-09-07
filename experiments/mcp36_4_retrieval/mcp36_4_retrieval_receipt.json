@@ -1,0 +1,282 @@
+{
+  "external_models": false,
+  "fixture": "C:\\work\\ITHKOR\\ithz_mcp\\fixtures\\mcp36_4_retrieval_labels.json",
+  "labels": "synthetic fixture labels; not independent annotation",
+  "metrics": {
+    "dev:deterministic": {
+      "answerable_queries": 2,
+      "k": 5,
+      "mean_latency_ms": 0.724,
+      "mrr": 0.5,
+      "no_answer_accuracy": null,
+      "queries": 2,
+      "recall_at_k": 0.5
+    },
+    "dev:hybrid": {
+      "answerable_queries": 2,
+      "k": 5,
+      "mean_latency_ms": 1.889,
+      "mrr": 0.5,
+      "no_answer_accuracy": null,
+      "queries": 2,
+      "recall_at_k": 0.5
+    },
+    "dev:lexical_graph": {
+      "answerable_queries": 2,
+      "k": 5,
+      "mean_latency_ms": 0.54,
+      "mrr": 0.5,
+      "no_answer_accuracy": null,
+      "queries": 2,
+      "recall_at_k": 0.5
+    },
+    "dev:rag_baseline": {
+      "answerable_queries": 2,
+      "k": 5,
+      "mean_latency_ms": 12.863,
+      "mrr": 0.5,
+      "no_answer_accuracy": null,
+      "queries": 2,
+      "recall_at_k": 0.5
+    },
+    "test:deterministic": {
+      "answerable_queries": 1,
+      "k": 5,
+      "mean_latency_ms": 0.377,
+      "mrr": 1.0,
+      "no_answer_accuracy": 0.0,
+      "queries": 2,
+      "recall_at_k": 1.0
+    },
+    "test:hybrid": {
+      "answerable_queries": 1,
+      "k": 5,
+      "mean_latency_ms": 0.802,
+      "mrr": 1.0,
+      "no_answer_accuracy": 0.0,
+      "queries": 2,
+      "recall_at_k": 1.0
+    },
+    "test:lexical_graph": {
+      "answerable_queries": 1,
+      "k": 5,
+      "mean_latency_ms": 0.314,
+      "mrr": 1.0,
+      "no_answer_accuracy": 0.0,
+      "queries": 2,
+      "recall_at_k": 1.0
+    },
+    "test:rag_baseline": {
+      "answerable_queries": 1,
+      "k": 5,
+      "mean_latency_ms": 3.345,
+      "mrr": 0.0,
+      "no_answer_accuracy": 1.0,
+      "queries": 2,
+      "recall_at_k": 0.0
+    }
+  },
+  "records": [
+    {
+      "first_relevant_rank": 1,
+      "gold_ids": [
+        "policy.md:1:line"
+      ],
+      "latency_ms": 0.641,
+      "mode": "deterministic",
+      "query": "ktoré pravidlo nesmie porušiť zmena",
+      "ranked_ids": [
+        "policy.md:1:line"
+      ],
+      "split": "dev"
+    },
+    {
+      "first_relevant_rank": 1,
+      "gold_ids": [
+        "policy.md:1:line"
+      ],
+      "latency_ms": 0.436,
+      "mode": "lexical_graph",
+      "query": "ktoré pravidlo nesmie porušiť zmena",
+      "ranked_ids": [
+        "policy.md:1:line"
+      ],
+      "split": "dev"
+    },
+    {
+      "first_relevant_rank": 1,
+      "gold_ids": [
+        "policy.md:1:line"
+      ],
+      "latency_ms": 2.374,
+      "mode": "hybrid",
+      "query": "ktoré pravidlo nesmie porušiť zmena",
+      "ranked_ids": [
+        "policy.md:1:line"
+      ],
+      "split": "dev"
+    },
+    {
+      "first_relevant_rank": 1,
+      "gold_ids": [
+        "policy.md:1:line"
+      ],
+      "latency_ms": 22.413,
+      "mode": "rag_baseline",
+      "query": "ktoré pravidlo nesmie porušiť zmena",
+      "ranked_ids": [
+        "policy.md:1:line"
+      ],
+      "split": "dev"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [
+        "gates.md:1:line"
+      ],
+      "latency_ms": 0.807,
+      "mode": "deterministic",
+      "query": "which gate blocks release",
+      "ranked_ids": [
+        "gates.md:1:gate"
+      ],
+      "split": "dev"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [
+        "gates.md:1:line"
+      ],
+      "latency_ms": 0.644,
+      "mode": "lexical_graph",
+      "query": "which gate blocks release",
+      "ranked_ids": [
+        "gates.md:1:gate"
+      ],
+      "split": "dev"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [
+        "gates.md:1:line"
+      ],
+      "latency_ms": 1.404,
+      "mode": "hybrid",
+      "query": "which gate blocks release",
+      "ranked_ids": [
+        "gates.md:1:gate"
+      ],
+      "split": "dev"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [
+        "gates.md:1:line"
+      ],
+      "latency_ms": 3.313,
+      "mode": "rag_baseline",
+      "query": "which gate blocks release",
+      "ranked_ids": [
+        "gates.md:1:gate"
+      ],
+      "split": "dev"
+    },
+    {
+      "first_relevant_rank": 1,
+      "gold_ids": [
+        "history.md:1:line"
+      ],
+      "latency_ms": 0.381,
+      "mode": "deterministic",
+      "query": "zrušený záznam iba história",
+      "ranked_ids": [
+        "history.md:1:line",
+        "policy.md:1:line"
+      ],
+      "split": "test"
+    },
+    {
+      "first_relevant_rank": 1,
+      "gold_ids": [
+        "history.md:1:line"
+      ],
+      "latency_ms": 0.317,
+      "mode": "lexical_graph",
+      "query": "zrušený záznam iba história",
+      "ranked_ids": [
+        "history.md:1:line"
+      ],
+      "split": "test"
+    },
+    {
+      "first_relevant_rank": 1,
+      "gold_ids": [
+        "history.md:1:line"
+      ],
+      "latency_ms": 0.811,
+      "mode": "hybrid",
+      "query": "zrušený záznam iba história",
+      "ranked_ids": [
+        "history.md:1:line",
+        "policy.md:1:line"
+      ],
+      "split": "test"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [
+        "history.md:1:line"
+      ],
+      "latency_ms": 3.615,
+      "mode": "rag_baseline",
+      "query": "zrušený záznam iba história",
+      "ranked_ids": [
+        "gates.md:1:gate"
+      ],
+      "split": "test"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [],
+      "latency_ms": 0.373,
+      "mode": "deterministic",
+      "query": "no matching retrieval item",
+      "ranked_ids": [
+        "history.md:1:line"
+      ],
+      "split": "test"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [],
+      "latency_ms": 0.31,
+      "mode": "lexical_graph",
+      "query": "no matching retrieval item",
+      "ranked_ids": [
+        "history.md:1:line"
+      ],
+      "split": "test"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [],
+      "latency_ms": 0.792,
+      "mode": "hybrid",
+      "query": "no matching retrieval item",
+      "ranked_ids": [
+        "history.md:1:line"
+      ],
+      "split": "test"
+    },
+    {
+      "first_relevant_rank": null,
+      "gold_ids": [],
+      "latency_ms": 3.074,
+      "mode": "rag_baseline",
+      "query": "no matching retrieval item",
+      "ranked_ids": [],
+      "split": "test"
+    }
+  ],
+  "schema": "ithz_mcp364_retrieval_benchmark_receipt_v1"
+}

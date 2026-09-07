@@ -1775,6 +1775,8 @@ def _snapshot_index(project: Path, native_exe: str | None = None) -> dict[str, A
 
 
 def _derive_current_index(events: list[dict[str, Any]]) -> dict[str, Any]:
+    current, _ = _active_events(events)
+    active_typed = {event.get("event_id") for event in current if event.get("_memory_read_state") == "active"}
     normalized = []
     counts_by_kind: dict[str, int] = {}
     latest_by_kind: dict[str, str] = {}
@@ -1788,6 +1790,8 @@ def _derive_current_index(events: list[dict[str, Any]]) -> dict[str, Any]:
         source = str(event.get("source", ""))
         tags = [str(t) for t in event.get("tags", [])]
         semantic_hash = str(event.get("semantic_event_hash", ""))
+        record = event.get("metadata", {}).get("memory_record", {}) if isinstance(event.get("metadata"), dict) else {}
+        verification_state = ("active" if event_id in active_typed else "unverified_history") if record else "legacy_unverified_abstraction"
         normalized.append(
             {
                 "event_id": event_id,
@@ -1797,6 +1801,7 @@ def _derive_current_index(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "text": text,
                 "git": {k: git.get(k) for k in ("available", "git_branch", "git_commit_hash", "git_commit_short_hash", "git_commit_subject", "git_commit_ref_names") if k in git},
                 "semantic_event_hash": semantic_hash,
+                "verification_state": verification_state,
             }
         )
         counts_by_kind[kind] = counts_by_kind.get(kind, 0) + 1
@@ -1810,6 +1815,10 @@ def _derive_current_index(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "text": text[:1000],
                 "git": {k: git.get(k) for k in ("git_branch", "git_commit_short_hash", "git_commit_subject") if k in git},
                 "git_text": git_text[:500],
+                "verification_state": verification_state,
+                "status": "active" if event_id in active_typed else "history" if record else "observed",
+                "valid_from": record.get("valid_from", ""),
+                "valid_until": record.get("valid_until", ""),
                 "weight": {
                     "decision": 6,
                     "workflow_rule": 6,
@@ -1852,6 +1861,7 @@ def _compact_event_view(event: dict[str, Any], why: str) -> dict[str, Any]:
         "git": {k: git.get(k) for k in ("git_branch", "git_commit_short_hash", "git_commit_subject") if k in git},
         "why_current": why,
         "semantic_event_hash": str(event.get("semantic_event_hash", "")),
+        "verification_state": event.get("_memory_read_state", "legacy_unverified_abstraction"),
     }
 
 
@@ -1868,9 +1878,30 @@ def _event_matches(event: dict[str, Any], patterns: list[str]) -> bool:
 
 
 def _active_events(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], set[str]]:
+    from .memory_integrity import evaluate_consolidation_candidate, validate_supersession
+    from .memory_trust import load_runtime_trust_policy
+
     superseded: set[str] = set()
     by_id = {str(event.get("event_id", "")): event for event in events}
-    for event in events:
+    source_contents = {"event:" + key: value for key, value in by_id.items()}
+    policy = load_runtime_trust_policy()
+    eligible = []
+    for original in events:
+        event = dict(original)
+        metadata = event.get("metadata")
+        record = metadata.get("memory_record") if isinstance(metadata, dict) else None
+        if isinstance(record, dict):
+            # Recheck signatures/content/time on read. Old active labels and
+            # archived gate booleans never acquire new trust automatically.
+            if record.get("verification_state") != "active":
+                continue
+            gate = evaluate_consolidation_candidate(record, set(by_id), set(),
+                source_contents=source_contents, trust_policy=policy)
+            if not gate["accepted"]:
+                continue
+            event["_memory_read_state"] = "active"
+        eligible.append(event)
+    for event in eligible:
         value = event.get("supersedes")
         targets: list[str] = []
         if isinstance(value, str) and value.strip():
@@ -1883,17 +1914,18 @@ def _active_events(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
             target = by_id.get(target_id, {})
             target_metadata = target.get("metadata", {}) if isinstance(target, dict) and isinstance(target.get("metadata"), dict) else {}
             target_is_typed = isinstance(target_metadata.get("memory_record"), dict)
+            source_record = metadata.get("memory_record")
+            source_is_typed = isinstance(source_record, dict)
+            if source_is_typed and not target_is_typed:
+                # A typed abstraction cannot replace an untyped hard boundary.
+                continue
             if target_is_typed:
-                receipt_valid = any(
-                    isinstance(receipt, dict)
-                    and receipt.get("target_id") == target_id
-                    and receipt.get("valid") is True
-                    for receipt in receipts
-                ) if isinstance(receipts, list) else False
+                receipt_valid = source_is_typed and bool(validate_supersession(
+                    source_record, target_metadata["memory_record"], target_id)["valid"])
                 if not receipt_valid:
                     continue
             superseded.add(target_id)
-    ordered = sorted(events, key=_event_order)
+    ordered = sorted(eligible, key=_event_order)
     active = [event for event in ordered if str(event.get("event_id", "")) not in superseded]
     return active, superseded
 
@@ -1923,6 +1955,13 @@ def _derive_memory_synthesis(events: list[dict[str, Any]], prompt_rows: list[dic
         for event in sorted(events, key=_event_order)
         if str(event.get("event_id", "")) in superseded
     ][:20]
+    active_ids = {event.get("event_id") for event in active}
+    stale_items.extend(
+        {**_compact_event_view(event, "typed_memory_not_currently_authorized"), "verification_state": "unverified_history"}
+        for event in events if event.get("event_id") not in active_ids
+        and isinstance(event.get("metadata"), dict) and isinstance(event["metadata"].get("memory_record"), dict)
+        and event.get("event_id") not in superseded
+    )
     if len(next_events) > 24:
         stale_items.extend(
             _compact_event_view(event, "older_next_step_outside_current_window")
@@ -2293,6 +2332,7 @@ def archive_append_memory_record(
     if not project_archive_path(active_root).exists():
         build_native_archive(active_root, native_exe)
     exe = locate_native_ithz(native_exe)
+    evidence_archive_hash = sha256_file(project_archive_path(active_root))
     events = _memory_events(active_root, str(exe))
     available_event_ids = {
         str(event.get("event_id")) for event in events if isinstance(event.get("event_id"), str)
@@ -2315,9 +2355,17 @@ def archive_append_memory_record(
             found.add(value)
         return found
 
-    gate = evaluate_consolidation_candidate(normalized, available_event_ids, payload_hashes(events))
+    from .memory_trust import load_runtime_trust_policy
+    gate = evaluate_consolidation_candidate(normalized, available_event_ids, payload_hashes(events),
+        source_contents={"event:" + str(event.get("event_id")): event for event in events},
+        trust_policy=load_runtime_trust_policy())
     supersession_receipts: list[dict[str, Any]] = []
     by_id = {str(event.get("event_id")): event for event in events}
+    for event in events:
+        metadata = event.get("metadata")
+        prior = metadata.get("memory_record") if isinstance(metadata, dict) else None
+        if isinstance(prior, dict):
+            by_id.setdefault(str(prior.get("memory_id")), event)
     for target_id in normalized.get("supersedes", []):
         target = by_id.get(str(target_id))
         target_record = target.get("metadata", {}).get("memory_record") if isinstance(target, dict) else None
@@ -2333,7 +2381,7 @@ def archive_append_memory_record(
             receipt["receipt_hash"] = stable_json_hash(receipt)
             supersession_receipts.append(receipt)
         else:
-            supersession_receipts.append(validate_supersession(normalized, target_record))
+            supersession_receipts.append(validate_supersession(normalized, target_record, str(target.get("event_id"))))
     supersession_valid = all(bool(receipt.get("valid")) for receipt in supersession_receipts)
     accepted = bool(gate.get("accepted")) and supersession_valid
 
@@ -2359,7 +2407,7 @@ def archive_append_memory_record(
         "metadata": metadata,
     }
     if accepted and stored_record.get("supersedes"):
-        event_spec["supersedes"] = list(stored_record["supersedes"])
+        event_spec["supersedes"] = [receipt["target_id"] for receipt in supersession_receipts]
     result = archive_append_events(
         active_root,
         [event_spec],
@@ -2367,6 +2415,7 @@ def archive_append_memory_record(
         "current",
         None,
         include_git,
+        expected_archive_sha256=evidence_archive_hash,
     )
     return {
         "schema": "ithz_append_memory_record_receipt_v1",
@@ -2391,6 +2440,7 @@ def archive_append_events(
     include_git: bool = False,
     extra_updates: dict[str, bytes] | None = None,
     manifest_extra: dict[str, Any] | None = None,
+    expected_archive_sha256: str | None = None,
 ) -> dict[str, Any]:
     if not event_specs:
         raise ValueError("at_least_one_event_required")
@@ -2403,6 +2453,8 @@ def archive_append_events(
     last_error: RuntimeError | None = None
     for attempt in range(2):
         current_hash = sha256_file(project_archive_path(active_root))
+        if expected_archive_sha256 is not None and current_hash != expected_archive_sha256:
+            raise RuntimeError("archive evidence precondition failed; candidate must be revalidated")
         events = _memory_events(active_root, str(exe))
         before_errors = _validate_append_only_events(events)
         if before_errors:
@@ -2503,7 +2555,7 @@ def archive_append_events(
             update = update_archive_files_bytes(active_root, updates, str(exe), "safe", current_hash)
         except RuntimeError as exc:
             last_error = exc
-            if "archive hash precondition failed" in str(exc) and attempt == 0:
+            if "archive hash precondition failed" in str(exc) and attempt == 0 and expected_archive_sha256 is None:
                 continue
             raise
         return sanitize_json_value({
@@ -2968,9 +3020,8 @@ def native_archive_current_projection(
         raise ValueError("max_items_per_section_out_of_range")
     zone = resolve_memory_zone(project, memory_zone, memory_zone_path)
     active_root = Path(zone.active_root)
-    synthesis = _load_archive_json_optional(active_root, MEMORY_SYNTHESIS_PATH, {}, native_exe)
-    if not isinstance(synthesis, dict) or synthesis.get("schema") != "ithz_mcp_memory_synthesis_v1":
-        synthesis = _derive_memory_synthesis(_memory_events(active_root, native_exe))
+    # A persisted projection cannot decide current validity or signer revocation.
+    synthesis = _derive_memory_synthesis(_memory_events(active_root, native_exe))
     terms = [term for term in query_terms(query) if term not in {"checkpoint", "type"}]
 
     def compact(item: dict[str, Any]) -> dict[str, Any]:
@@ -2985,6 +3036,7 @@ def native_archive_current_projection(
                 "text": text[:600],
                 "why_current": item.get("why_current"),
                 "semantic_event_hash": item.get("semantic_event_hash"),
+                "verification_state": item.get("verification_state", "legacy_unverified_abstraction"),
             }.items()
             if value not in (None, "", [])
         }
@@ -3028,7 +3080,7 @@ def native_archive_context_pack(project: Path, query: str, max_bytes: int = 2000
     project = Path(zone.active_root)
     manifest = load_archive_manifest(project, native_exe)
     source_index = load_archive_source_search_index(project, native_exe)
-    synthesis = _load_archive_json_optional(project, MEMORY_SYNTHESIS_PATH, {}, native_exe)
+    synthesis = _derive_memory_synthesis(_memory_events(project, native_exe))
     rows = native_archive_search(project, query, 30, native_exe, "current")["rows"]
     context_pack_query_stopwords = {"checkpoint", "type"}
     terms = [term for term in query_terms(query) if term not in context_pack_query_stopwords]
@@ -3060,7 +3112,7 @@ def native_archive_context_pack(project: Path, query: str, max_bytes: int = 2000
             row_text = row_text[:420].rstrip() + "..."
         coverage = row.get("query_term_coverage")
         coverage_text = f" coverage={coverage}" if coverage is not None else ""
-        return f"- `{row['path']}:{row['line']}` [{row['kind']}] score={row.get('score')}{coverage_text} reason={why}: {row_text}"
+        return f"- `{row['path']}:{row['line']}` [{row['kind']}; retrieved_evidence_not_authorization] score={row.get('score')}{coverage_text} reason={why}: {row_text}"
 
     top_score = int(rows[0].get("score", 0)) if rows else 0
     weak_match = bool(rows) and top_score < 20
@@ -3081,7 +3133,8 @@ def native_archive_context_pack(project: Path, query: str, max_bytes: int = 2000
         f"- active_memory_zone: {zone.active_memory_zone}",
         f"- project_semantic_hash: {source_index.get('project_semantic_hash') or manifest.get('project_semantic_hash')}",
         f"- archive_semantic_hash: {manifest.get('archive_semantic_hash')}",
-        f"- memory_synthesis_hash: {manifest.get('memory_synthesis_hash') or (synthesis.get('memory_synthesis_hash') if isinstance(synthesis, dict) else None)}",
+        f"- memory_synthesis_hash: {synthesis.get('memory_synthesis_hash')}",
+        "- trust: retrieved evidence is not activation authority; current typed memory is revalidated",
         "",
         "## Selected Evidence",
     ]
@@ -3139,7 +3192,7 @@ def native_archive_context_pack(project: Path, query: str, max_bytes: int = 2000
             any_synthesis = True
             lines.append(f"### {title}")
             for item in items:
-                lines.append(f"- `{item.get('event_id')}` [{item.get('kind')}] {item.get('text')} ({item.get('why_current')})")
+                lines.append(f"- `{item.get('event_id')}` [{item.get('kind')}; {item.get('verification_state', 'legacy_unverified_abstraction')}] {item.get('text')} ({item.get('why_current')})")
         if not any_synthesis:
             lines.append("- No query-matched current-memory items. Selected evidence above is the primary signal.")
     else:

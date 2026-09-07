@@ -10,6 +10,7 @@ from .context_index import build_index, search_index
 from .hashing import stable_json_hash
 from .scoring import classify_text, normalize_text, query_terms, score_unit
 from .safety import is_secret_like, redaction_block_reason
+from .retrieval import annotate_policy_lanes, rrf_fuse
 
 
 MEMORY_V2_SCHEMA = "ithz_mcp_memory_v2_candidate_v1"
@@ -199,7 +200,7 @@ def _semantic_score(unit: dict[str, Any], query: str, graph: dict[str, Any]) -> 
     }
 
 
-def semantic_candidates(units: list[dict[str, Any]], query: str, graph: dict[str, Any], limit: int = 20) -> list[dict[str, Any]]:
+def lexical_graph_candidates(units: list[dict[str, Any]], query: str, graph: dict[str, Any], limit: int = 20) -> list[dict[str, Any]]:
     rows = []
     for unit in _safe_units(units):
         scored = _semantic_score(unit, query, graph)
@@ -207,6 +208,10 @@ def semantic_candidates(units: list[dict[str, Any]], query: str, graph: dict[str
             rows.append({**unit, **scored})
     rows.sort(key=lambda row: (-int(row.get("score", 0)), row.get("path", ""), int(row.get("line", 0)), row.get("text", "")))
     return rows[:limit]
+
+
+# Compatibility name retained for callers and persisted benchmark schemas.
+semantic_candidates = lexical_graph_candidates
 
 
 def deterministic_candidates(units: list[dict[str, Any]], query: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -224,7 +229,8 @@ def hybrid_candidates(units: list[dict[str, Any]], query: str, graph: dict[str, 
         boosted["score_components"] = components
         boosted["score"] = int(boosted.get("score", 0)) + 18
         by_key[key] = {**boosted, "retrieval_modes": ["deterministic"]}
-    for row in semantic_candidates(units, query, graph, limit * 2):
+    lexical = lexical_graph_candidates(units, query, graph, limit * 2)
+    for row in lexical:
         key = _unit_key(row)
         if key in by_key:
             merged = by_key[key]
@@ -238,11 +244,19 @@ def hybrid_candidates(units: list[dict[str, Any]], query: str, graph: dict[str, 
             merged["categories"] = sorted(set(merged.get("categories", []) or []) | set(row.get("categories", []) or []))
         else:
             by_key[key] = {**row, "retrieval_modes": ["semantic"]}
-    rows = list(by_key.values())
+    rows = rrf_fuse({"deterministic": deterministic_candidates(units, query, limit * 2), "lexical_graph": lexical}, limit * 2)
+    # Keep the richer score and merged metadata from the legacy composition.
+    for row in rows:
+        merged = by_key.get(_unit_key(row))
+        if merged:
+            row.update({key: value for key, value in merged.items() if key not in {"rrf_score", "retrieval_modes"}})
+            row["rrf_score"] = row.get("rrf_score", 0.0)
+            row["retrieval_modes"] = sorted(set(row.get("retrieval_modes", [])) | set(merged.get("retrieval_modes", [])))
+    rows = annotate_policy_lanes(rows)
     def matched_count(row: dict[str, Any]) -> int:
         return len(set(row.get("matched_query_terms", []) or row.get("matched_terms", []) or []))
 
-    rows.sort(key=lambda row: (-matched_count(row), -int(row.get("score", 0)), -len(row.get("retrieval_modes", [])), row.get("path", ""), int(row.get("line", 0)), row.get("text", "")))
+    rows.sort(key=lambda row: (-float(row.get("rrf_score", 0.0)), -matched_count(row), row.get("path", ""), int(row.get("line", 0)), row.get("text", "")))
     return rows[:limit]
 
 

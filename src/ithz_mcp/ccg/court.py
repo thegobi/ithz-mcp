@@ -34,7 +34,7 @@ from .models import BackendError, CodexAppServerBackend, GeminiBackend, GrokBack
 from .settings_store import effective_preferences, resolve_gemini_key, resolve_xai_key
 
 
-CCG_VERSION = "mcp36.4-opt-in-canary-v1"
+CCG_VERSION = "mcp36.5-evidence-trust-v2"
 ROLE_TEMPLATE_VERSION = "ccg_role_template_v3"
 RISK_LEVELS = ("low", "medium", "high", "critical")
 VERDICTS = ("ALLOW", "ALLOW_WITH_LIMITS", "SIMULATE_ONLY", "REQUEST_EVIDENCE", "HUMAN_REQUIRED", "STOP")
@@ -254,6 +254,10 @@ def _role_template(
             "Search for composed multi-step failures, indirect effects, hidden state changes and apparently harmless "
             "operations that combine into a forbidden result. Give stable objection ids."
         ),
+        "opponent_blind_first": (
+            "Perform an independent raw-first pass before any proposal exists. Do not infer a plan, shared synthesis, "
+            "or another role's position. Record only evidence-grounded risks and missing evidence with stable objection ids."
+        ),
         "opponent_fallback": (
             "Work as the raw-first fallback control. Do not infer support from a withheld shared synthesis. Search for "
             "composed multi-step failures, indirect effects and apparently harmless operations that combine into a "
@@ -327,6 +331,8 @@ def _role_prompt(
             f"PROPOSAL:\n{_safe_json_string(payload['proposal'])}\n\n"
             "Submit the primary objection report now."
         ), template_hash
+    if role == "opponent_blind_first":
+        return base + "Submit the sealed independent first-pass objection report now.", template_hash
     if role in {"opponent_cross", "opponent_fallback"}:
         return base + (
             f"PROPOSAL:\n{_safe_json_string(payload['proposal'])}\n\n"
@@ -334,10 +340,13 @@ def _role_prompt(
         ), template_hash
     if role == "judge":
         # Deliberately contains no provider, model, fallback or thread metadata.
+        blind_first = payload.get("opponent_blind_first")
+        blind_first_block = f"INDEPENDENT FIRST PASS:\n{_safe_json_string(blind_first)}\n\n" if isinstance(blind_first, dict) else ""
         return base + (
             f"PROPOSAL:\n{_safe_json_string(payload['proposal'])}\n\n"
             f"OPPONENT 1:\n{_safe_json_string(payload['opponent_1'])}\n\n"
             f"OPPONENT 2:\n{_safe_json_string(payload['opponent_2'])}\n\n"
+            f"{blind_first_block}"
             "Return only the blind semantic verdict."
         ), template_hash
     if role == "auditor":
@@ -1197,6 +1206,7 @@ class CourtRunner:
         opponent_2: str = "auto",
         final_case_contract: dict[str, Any] | None = None,
         canary_contract: dict[str, Any] | None = None,
+        blind_first_pass: bool = False,
     ) -> dict[str, Any]:
         if reuse_decision not in {"auto", "off"}:
             raise ValueError("reuse_decision_must_be_auto_or_off")
@@ -1213,6 +1223,8 @@ class CourtRunner:
                 raise ValueError("canary_contract_invalid")
             if capability != "analysis.read" or reuse_decision != "off":
                 raise ValueError("canary_runtime_scope_invalid")
+            if blind_first_pass:
+                raise ValueError("canary_blind_first_pass_not_enabled")
         selected_cross, cross_required = self._opponent_2_selection(use_grok, opponent_2)
         if canary_contract is not None:
             cross_backend = self._backend_for_cross_provider(selected_cross)
@@ -1227,6 +1239,7 @@ class CourtRunner:
             "daybreak_selected": daybreak_selected,
             "daybreak_required": daybreak_required,
             "reuse_contract": "verified_material_only_no_authorization_copy",
+            "deliberation_mode": "blind_first_then_critique" if blind_first_pass else "proposal_then_critique_economical",
         }
         if final_case_contract is not None:
             review_profile["final_case_contract"] = final_case_contract
@@ -1251,6 +1264,7 @@ class CourtRunner:
             "proposer": "codex_new_thread",
             "opponent_1": "daybreak_when_selected_else_codex_new_thread",
             "opponent_2": f"{selected_cross}_cross_lab_with_recorded_fallback",
+            "independent_first_pass": "sealed_before_proposal" if blind_first_pass else "not_requested",
             "judge": "codex_blind_new_thread",
             "auditor": "codex_process_new_thread",
             "cross_lab_intended": intended_cross,
@@ -1262,6 +1276,13 @@ class CourtRunner:
         case_id = self.ledger.create_case(evidence, self.constitution, role_plan)
         self.ledger.append(case_id, "deliberation_started", {"risk": risk, "capability": capability})
 
+        blind_first: RoleResult | None = None
+        if blind_first_pass:
+            blind_backend = self._backend_for_cross_provider(selected_cross)
+            if selected_cross not in {"gemini", "grok"} or blind_backend is None:
+                raise BackendError("blind_first_cross_lab_required")
+            blind_first = self._run_role(blind_backend, "opponent_blind_first", evidence, {}, OPPONENT_SCHEMA, case_id)
+            self.ledger.append(case_id, "blind_first_pass_sealed", {"thread_id": blind_first.thread_id, "evidence_hash": evidence["evidence_hash"]})
         proposal = self._run_role(self.codex, "proposer", evidence, {}, PROPOSER_SCHEMA, case_id)
         cross_fallbacks: list[str] = []
         daybreak_fallback_reason = ""
@@ -1355,13 +1376,18 @@ class CourtRunner:
             "fallback_reason": cross_fallback_reason,
             "daybreak_fallback_reason": daybreak_fallback_reason,
         }
+        if blind_first is not None:
+            role_manifest["opponent_blind_first"] = {"provider": blind_first.provider, "model": blind_first.model, "thread_id": blind_first.thread_id}
         self.ledger.append(case_id, "role_manifest_sealed", role_manifest)
 
+        judge_payload = {"proposal": proposal.data, "opponent_1": opponent_1.data, "opponent_2": opponent_2_result.data}
+        if blind_first is not None:
+            judge_payload["opponent_blind_first"] = blind_first.data
         judge = self._run_role(
             self.codex,
             "judge",
             evidence,
-            {"proposal": proposal.data, "opponent_1": opponent_1.data, "opponent_2": opponent_2_result.data},
+            judge_payload,
             JUDGE_SCHEMA,
             case_id,
         )
@@ -1370,16 +1396,18 @@ class CourtRunner:
             str(role_manifest[name]["thread_id"])
             for name in ("proposer", "opponent_1", "opponent_2", "judge")
         ]
+        if blind_first is not None:
+            upstream_thread_ids.append(str(role_manifest["opponent_blind_first"]["thread_id"]))
         procedure_evidence = {
             "schema": "ccg_formal_procedure_evidence_v2",
             "case_id": case_id,
-            "expected_role_count": 5,
-            "completed_upstream_role_count": 4,
+            "expected_role_count": 6 if blind_first is not None else 5,
+            "completed_upstream_role_count": 5 if blind_first is not None else 4,
             "current_role": "auditor",
-            "upstream_thread_ids_distinct": len(set(upstream_thread_ids)) == 4,
+            "upstream_thread_ids_distinct": len(set(upstream_thread_ids)) == len(upstream_thread_ids),
             "all_upstream_evidence_hashes_match": all(
                 result.data.get("evidence_hash") == evidence["evidence_hash"]
-                for result in (proposal, opponent_1, opponent_2_result, judge)
+                for result in ([proposal, opponent_1, opponent_2_result] + ([blind_first] if blind_first is not None else []) + [judge])
             ),
             "judge_packet_provider_identity_withheld": True,
             "opponents_completed_before_judge": True,
@@ -1401,7 +1429,7 @@ class CourtRunner:
                 "role_manifest": role_manifest,
                 "procedure_evidence": procedure_evidence,
                 "proposal": proposal.data,
-                "opponents": [opponent_1.data, opponent_2_result.data],
+                "opponents": [opponent_1.data, opponent_2_result.data] + ([blind_first.data] if blind_first is not None else []),
                 "judge": judge.data,
             },
             AUDITOR_SCHEMA,
@@ -1411,13 +1439,14 @@ class CourtRunner:
         self.ledger.append(
             case_id,
             "role_manifest_completed",
-            {"role_count": 5, "role_manifest_hash": stable_json_hash(role_manifest)},
+            {"role_count": 6 if blind_first is not None else 5, "role_manifest_hash": stable_json_hash(role_manifest)},
         )
 
+        all_opponents = [opponent_1, opponent_2_result] + ([blind_first] if blind_first is not None else [])
         verdict, formal_reasons, approved_action = self._formal_verdict(
             evidence,
             proposal,
-            [opponent_1, opponent_2_result],
+            all_opponents,
             judge,
             auditor,
             cross_lab_quorum,
@@ -1440,7 +1469,7 @@ class CourtRunner:
                 "claims": authorization_for_return["claims"],
             }
 
-        provider_usage = _provider_usage([proposal, opponent_1, opponent_2_result, judge, auditor])
+        provider_usage = _provider_usage([proposal, *all_opponents, judge, auditor])
         if (final_case_contract is not None or canary_contract is not None) and not provider_usage["complete"]:
             verdict = "REQUEST_EVIDENCE"
             approved_action = None
@@ -1462,7 +1491,8 @@ class CourtRunner:
             "advisory_only": capability == "analysis.read" or authorization_for_ledger is None,
             "judge_blind_to_provider": True,
             "reused_decision": False,
-            "model_runs": 5,
+            "model_runs": 6 if blind_first is not None else 5,
+            "independent_first_pass": blind_first is not None,
             "provider_usage": provider_usage,
             "final_case_contract": final_case_contract,
             "canary_contract": canary_contract,

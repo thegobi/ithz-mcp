@@ -4110,11 +4110,7 @@ def run_mcp30_memory_v2() -> bool:
             }
         )
 
-    candidate_projects = [
-        Path(r"C:\work\doucim.com"),
-        Path(r"C:\work\afroplants.eu"),
-        Path(r"C:\work\partnerske_weby\eplan\monorepo-frontend"),
-    ]
+    candidate_projects = []  # Public self-tests do not inspect personal projects.
     for candidate in candidate_projects:
         if not candidate.exists():
             continue
@@ -4229,11 +4225,12 @@ def run_mcp31_local_rag() -> bool:
             ]
         )
 
-    candidate = Path(r"C:\work\doucim.com")
-    if candidate.exists():
+    benchmark_root = os.environ.get("ITHZ_BENCHMARK_PROJECT_ROOT")
+    candidate = Path(benchmark_root) if benchmark_root else None
+    if candidate is not None and candidate.exists():
         try:
             with tempfile.TemporaryDirectory() as td:
-                sampled = Path(td) / "doucim_sample"
+                sampled = Path(td) / "project_sample"
                 sampled.mkdir()
                 copied = 0
                 for rel in ("project.md", "AI_PROJECT_BRIEF.md", "WORKFLOW_RULES.md", "DECISIONS_LOG.md", "PROJECT_CONTEXT.md"):

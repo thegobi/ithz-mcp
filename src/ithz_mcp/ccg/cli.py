@@ -89,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--opponent-2", choices=["auto", "gemini", "grok", "off"], default="auto")
     run.add_argument("--use-daybreak", choices=["auto", "required", "off"], default="auto")
     run.add_argument("--reuse-decision", choices=["auto", "off"], default="auto")
+    run.add_argument("--blind-first-pass", action="store_true", help="Run the optional sealed raw-first pass before proposal (six metered roles).")
     run.add_argument("--backend", choices=["codex", "scripted"], default="codex")
     run.add_argument("--model", default=preferences["codex_model"])
     run.add_argument("--effort", default=preferences["codex_effort"])
@@ -179,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         args.use_daybreak,
         args.reuse_decision,
         args.opponent_2,
+        blind_first_pass=args.blind_first_pass,
     )
     token = result.pop("capability_token", None)
     if token and args.execute_demo:

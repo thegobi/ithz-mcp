@@ -410,7 +410,7 @@ def mcp_tool_schemas(storage_profile: str = "legacy", server_mode: str = "read-o
         ),
         _tool_schema(
             "ithz_archive_append_memory_record",
-            "Explicit write-enabled profile only: validate and append a source-bound MCP36 typed abstraction. Invalid supersession is quarantined and cannot deactivate history.",
+            "Explicit write-enabled profile only: append a typed memory candidate. Activation requires independent signed support and authorization bound to exact candidate/scope/archive event content, verified against operator-pinned runtime policy. Caller-supplied approval IDs alone grant no authority. Unverified candidates and invalid supersession are quarantined; historical records are preserved.",
             {**archive_props, "record": {"type": "object", "additionalProperties": True}, "include_git": {"type": "boolean"}},
             ["record"],
         ),

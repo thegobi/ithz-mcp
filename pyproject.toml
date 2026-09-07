@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ithz-mcp"
-version = "0.1.0a14"
-description = "Local-first project memory with evidence-aware MCP36.4 canary governance for AI coding agents."
+version = "0.1.0a15"
+description = "Local-first project memory with evidence-bound MCP36.5 memory and review for AI coding agents."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "LicenseRef-Proprietary"
@@ -32,6 +32,9 @@ classifiers = [
 Homepage = "https://ithz.dev/mcp/"
 Source = "https://github.com/thegobi/ithz-mcp"
 Issues = "https://github.com/thegobi/ithz-mcp/issues"
+
+[project.optional-dependencies]
+trust = ["cryptography>=42"]
 
 [project.scripts]
 ithz-mcp = "ithz_mcp.cli:main"

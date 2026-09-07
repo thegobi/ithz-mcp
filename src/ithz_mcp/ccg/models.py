@@ -645,7 +645,7 @@ class ScriptedBackend:
                 "assumptions": ["The target is the isolated demonstration sandbox."],
                 "evidence_references": ["constitution", "task charter"],
             }
-        elif role in {"opponent_primary", "opponent_cross", "opponent_fallback"}:
+        elif role in {"opponent_primary", "opponent_cross", "opponent_fallback", "opponent_blind_first"}:
             data = {
                 "evidence_hash": evidence_hash,
                 "recommendation": "ALLOW_WITH_LIMITS",
