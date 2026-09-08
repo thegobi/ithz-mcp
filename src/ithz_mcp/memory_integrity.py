@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .hashing import stable_json_hash
+from .safety import redaction_block_reason
 
 
-MEMORY_INTEGRITY_VERSION = "mcp36.5-evidence-trust-v2"
+MEMORY_INTEGRITY_VERSION = "mcp36.6-end-to-end-integrity-v3"
 MEMORY_RECORD_SCHEMA = "ithz_memory_record_v2"
 EVIDENCE_VIEW_SCHEMA = "ccg_evidence_view_v1"
 INFLUENCE_RECEIPT_SCHEMA = "ithz_memory_influence_receipt_v1"
@@ -275,28 +278,113 @@ def _section_items(projection: dict[str, Any], names: tuple[str, ...]) -> list[d
     return rows
 
 
+MAX_RAW_EVIDENCE_ITEM_BYTES = 16 * 1024
+MAX_RAW_EVIDENCE_TOTAL_BYTES = 128 * 1024
+
+
+def _delivered_text(text: str, expected_hash: str, total: int) -> tuple[str | None, str | None]:
+    data = text.encode("utf-8")
+    actual = hashlib.sha256(data).hexdigest()
+    if not _is_sha256(expected_hash) or actual != expected_hash:
+        return None, "content_hash_mismatch"
+    if len(data) > MAX_RAW_EVIDENCE_ITEM_BYTES:
+        return None, "content_oversize"
+    if redaction_block_reason(text):
+        return None, "content_redaction_blocked"
+    return text, None
+
+
+def _projection_raw_evidence(projection: dict[str, Any]) -> list[dict[str, Any]]:
+    """Accept only signed projection payloads whose actual bytes are delivered."""
+    source_rows = projection.get("source_evidence", [])
+    if not isinstance(source_rows, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for source in source_rows:
+        if not isinstance(source, dict):
+            continue
+        item_id = str(source.get("id", ""))
+        text = source.get("content_text")
+        expected = str(source.get("content_sha256", ""))
+        actual_bytes = len(text.encode("utf-8")) if isinstance(text, str) else None
+        if source.get("content_bytes") != actual_bytes:
+            delivered, reason = None, "content_bytes_mismatch"
+        elif str(source.get("kind", "")) != "archive_event" or not item_id.startswith("event:"):
+            delivered, reason = None, "source_kind_or_id_invalid"
+        else:
+            delivered, reason = _delivered_text(text, expected, 0) if isinstance(text, str) else (None, "content_missing")
+        rows.append({
+            "kind": str(source.get("kind", "archive_event")),
+            "item_id": item_id,
+            "content_sha256": expected,
+            "content_bytes": source.get("content_bytes"),
+            "content_text": delivered,
+            "content_delivered_to_role": delivered is not None,
+            "source_integrity_verified": bool(source.get("runtime_verified") is True and _is_sha256(expected) and item_id.startswith("event:") and reason not in {"content_hash_mismatch", "content_bytes_mismatch", "content_missing", "source_kind_or_id_invalid", "content_redaction_blocked"}),
+            "content_verified": bool(source.get("runtime_verified") is True and delivered is not None and item_id.startswith("event:")),
+            "verification_basis": str(source.get("verification_basis", "unverified_projection_reference")),
+            "delivery_failure_reason": reason,
+            "claim_ids": [str(value) for value in source.get("claim_ids", []) if isinstance(value, str)],
+        })
+    return rows
+
+
 def _manifest_raw_evidence(review_manifest: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not isinstance(review_manifest, dict):
         return []
     rows: list[dict[str, Any]] = []
     manifest_verified = review_manifest.get("command_outputs_runtime_verified") is True
+    root_value = review_manifest.get("_content_root")
+    try:
+        root = Path(str(root_value)).resolve() if root_value else None
+    except OSError:
+        root = None
+    def read_delivered(relative: Any, expected: str) -> tuple[str | None, str | None]:
+        if root is None or not isinstance(relative, str):
+            return None, "content_root_missing"
+        try:
+            target = (root / relative).resolve()
+            if target == root or root not in target.parents or not target.is_file():
+                return None, "content_path_invalid"
+            # Read only a bounded delivery candidate.  Continue streaming the
+            # digest so an oversize artifact can be integrity-verified without
+            # ever materialising its whole content in a role packet.
+            with target.open("rb") as handle:
+                data = handle.read(MAX_RAW_EVIDENCE_ITEM_BYTES + 1)
+                digest = hashlib.sha256(data)
+                while chunk := handle.read(64 * 1024): digest.update(chunk)
+            if digest.hexdigest() != expected:
+                return None, "content_hash_mismatch"
+            if len(data) > MAX_RAW_EVIDENCE_ITEM_BYTES:
+                return None, "content_oversize"
+            text = data.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None, "content_unreadable"
+        delivered, reason = _delivered_text(text, expected, 0)
+        return delivered, reason
     for artifact in review_manifest.get("artifacts", []):
         if isinstance(artifact, dict):
             digest = str(artifact.get("sha256", ""))
-            content_verified = manifest_verified and _is_sha256(digest) and bool(artifact.get("path"))
+            delivered, reason = read_delivered(artifact.get("path"), digest)
+            content_verified = manifest_verified and delivered is not None
             rows.append(
                 {
                     "kind": "artifact",
                     "item_id": "artifact:" + digest,
                     "path": artifact.get("path"),
                     "sha256": digest,
+                    "content_text": delivered,
+                    "content_delivered_to_role": delivered is not None,
+                    "artifact_integrity_verified": manifest_verified and _is_sha256(digest) and reason not in {"content_hash_mismatch", "content_unreadable", "content_path_invalid", "content_root_missing", "content_redaction_blocked"},
                     "content_verified": content_verified,
                     "verification_basis": "manifest_runtime_validation" if content_verified else "unverified_manifest_reference",
+                    "delivery_failure_reason": reason,
                 }
             )
     for receipt in review_manifest.get("command_receipts", []):
         if isinstance(receipt, dict):
             output_hash = str(receipt.get("output_sha256", ""))
+            delivered, reason = read_delivered(receipt.get("output_artifact_path"), output_hash)
             rows.append(
                 {
                     "kind": "command_output",
@@ -305,9 +393,13 @@ def _manifest_raw_evidence(review_manifest: dict[str, Any] | None) -> list[dict[
                     "exit_code": receipt.get("exit_code"),
                     "output_artifact_path": receipt.get("output_artifact_path"),
                     "output_sha256": output_hash,
-                    "content_verified": bool(receipt.get("output_runtime_verified", False)) and _is_sha256(output_hash),
+                    "content_text": delivered,
+                    "content_delivered_to_role": delivered is not None,
+                    "artifact_integrity_verified": bool(receipt.get("output_runtime_verified", False)) and _is_sha256(output_hash) and reason not in {"content_hash_mismatch", "content_unreadable", "content_path_invalid", "content_root_missing", "content_redaction_blocked"},
+                    "content_verified": bool(receipt.get("output_runtime_verified", False)) and delivered is not None,
                     "verification_basis": "command_output_runtime_validation" if bool(receipt.get("output_runtime_verified", False)) and _is_sha256(output_hash) else "unverified_command_reference",
                     "result_summary": receipt.get("result_summary"),
+                    "delivery_failure_reason": reason,
                 }
             )
     return rows
@@ -322,7 +414,27 @@ def build_evidence_views(
     hard_policy = _section_items(projection, HARD_POLICY_SECTIONS)
     abstractions = _section_items(projection, ABSTRACTION_SECTIONS)
     counterevidence = _section_items(projection, COUNTEREVIDENCE_SECTIONS)
-    raw_evidence = _manifest_raw_evidence(review_manifest)
+    raw_evidence = _projection_raw_evidence(projection) + _manifest_raw_evidence(review_manifest)
+    # One shared delivery budget, with deduplication before it. Integrity is
+    # retained when bytes are intentionally withheld for budget reasons.
+    unique_raw: list[dict[str, Any]] = []
+    delivered_identities: set[tuple[str, str]] = set()
+    delivered_total = 0
+    for row in raw_evidence:
+        digest = str(row.get("content_sha256") or row.get("sha256") or row.get("output_sha256") or "")
+        identity = (str(row.get("item_id", "")), digest)
+        if digest and identity in delivered_identities:
+            continue
+        if digest:
+            delivered_identities.add(identity)
+        text = row.get("content_text")
+        size = len(text.encode("utf-8")) if isinstance(text, str) else 0
+        if text is not None and delivered_total + size > MAX_RAW_EVIDENCE_TOTAL_BYTES:
+            row["content_text"] = None; row["content_delivered_to_role"] = False; row["content_verified"] = False; row["delivery_failure_reason"] = "total_content_oversize"
+        elif text is not None:
+            delivered_total += size
+        unique_raw.append(row)
+    raw_evidence = unique_raw
     if not raw_evidence:
         raw_evidence = [
             {
@@ -333,25 +445,57 @@ def build_evidence_views(
                 # This is direct bounded event content, unlike a bare artifact
                 # metadata row. It is still not a command-runtime receipt.
                 "content_verified": bool(str(item.get("text", "")).strip()),
+                "content_delivered_to_role": bool(str(item.get("text", "")).strip()),
                 "verification_basis": "bounded_projection_event_content",
             }
             for item in _section_items(projection, ("current_gates", "current_risks"))
+            if not item.get("source_event_ids") and not item.get("source_artifact_hashes") and not item.get("record_hash") and not item.get("candidate_hash")
         ]
 
     raw_ids = {str(row["item_id"]) for row in raw_evidence}
+    # Projection-event fallback predates the explicit event: namespace. Keep
+    # its binding compatible while recorded signed source_evidence stays exact.
+    raw_binding_ids = raw_ids | {"event:" + value for value in raw_ids if not value.startswith("event:")}
     claim_matrix = []
     for item in abstractions:
         # Bind a claim only to the evidence it actually names.  A legacy summary
         # has no implied support merely because another raw item exists.
-        bindings = [str(value) for value in item.get("source_event_ids", [])]
+        bindings = [str(value) if str(value).startswith("event:") else "event:" + str(value) for value in item.get("source_event_ids", [])]
         bindings += ["artifact:" + str(value) for value in item.get("source_artifact_hashes", [])]
-        exact_bindings = sorted(set(bindings) & raw_ids)
+        source_bindings_value = item.get("source_bindings", {})
+        if isinstance(source_bindings_value, list):
+            source_bindings = {str(row.get("id")): row for row in source_bindings_value if isinstance(row, dict) and row.get("id")}
+        else:
+            source_bindings = source_bindings_value if isinstance(source_bindings_value, dict) else {}
+        exact_bindings = sorted(set(bindings) & raw_binding_ids)
+        # When native projection supplies claim_ids, bind an excerpt only to
+        # those typed claims; no row gets universal support by association.
+        def binding_verified(binding: str) -> bool:
+            expected = source_bindings.get(binding) or source_bindings.get(binding.removeprefix("event:"))
+            expected_hash = expected.get("sha256") if isinstance(expected, dict) else None
+            for row in raw_evidence:
+                row_id = str(row.get("item_id"))
+                if binding not in {row_id, "event:" + row_id}:
+                    continue
+                if not (row.get("content_verified") and row.get("content_delivered_to_role")):
+                    continue
+                if row_id.startswith("event:") and row.get("content_sha256") != expected_hash:
+                    # Signed native evidence requires the claim's signed
+                    # reference too; a swapped payload plus new self-hash is
+                    # still not support for this claim.
+                    continue
+                if row.get("claim_ids") and item["item_id"] not in row["claim_ids"]:
+                    continue
+                return True
+            return False
+        exact_bindings = [binding for binding in exact_bindings if binding_verified(binding)]
+        presentation_bindings = [value[6:] if value.startswith("event:") and value[6:] in raw_ids else value for value in exact_bindings]
         claim_matrix.append({
             "item_id": item["item_id"],
-            "claim": str(item.get("text", item.get("statement", "")))[:600],
+            "claim": str(item.get("text", item.get("statement", ""))),
             "source_section": item["source_section"],
             "verification_state": item.get("verification_state"),
-            "raw_evidence_ids": exact_bindings,
+            "raw_evidence_ids": presentation_bindings,
             "binding_complete": bool(bindings) and len(exact_bindings) == len(set(bindings)),
         })
 
@@ -404,6 +548,7 @@ def build_evidence_views(
             "schema": EVIDENCE_VIEW_SCHEMA,
             "purpose": "blind_claim_evidence_matrix",
             "claim_evidence_matrix": claim_matrix,
+            "raw_evidence": raw_evidence,
             "hard_policy": hard_policy,
             "provider_identity_withheld": True,
         },
@@ -484,7 +629,7 @@ def build_evidence_views(
 def sealed_evidence_for_role(evidence: dict[str, Any], role: str) -> dict[str, Any]:
     """Return only the evidence lane assigned to a role while keeping one root hash."""
 
-    forbidden_projection_keys = {"ithz_current_projection", "ithz_projection_delta", "evidence_views"}
+    forbidden_projection_keys = {"ithz_current_projection", "ithz_projection_delta", "evidence_views", "_content_root"}
 
     def without_nested_projection(value: Any) -> Any:
         if isinstance(value, dict):

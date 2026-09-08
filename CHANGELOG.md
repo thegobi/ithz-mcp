@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0a16 - 2026-09-08
+
+- Bind typed event display/routing to verified signed content and reject duplicate identities.
+- Deliver bounded artifact and command content to role prompts with separate integrity/delivery receipts.
+- Preserve signed source IDs and digest bindings through native projection into judge evidence.
+
 ## 0.1.0a15 - 2026-09-08
 
 - Memory activation separates source binding, independently signed support and independently signed authorization. Receipts bind the exact candidate, evidence contents, scope and policy. Missing trust configuration leaves new typed claims quarantined.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import csv
 import ctypes
 import hashlib
@@ -1776,6 +1777,7 @@ def _snapshot_index(project: Path, native_exe: str | None = None) -> dict[str, A
 
 def _derive_current_index(events: list[dict[str, Any]]) -> dict[str, Any]:
     current, _ = _active_events(events)
+    current_by_id = {event.get("event_id"): event for event in current}
     active_typed = {event.get("event_id") for event in current if event.get("_memory_read_state") == "active"}
     normalized = []
     counts_by_kind: dict[str, int] = {}
@@ -1783,6 +1785,7 @@ def _derive_current_index(events: list[dict[str, Any]]) -> dict[str, Any]:
     searchable_units = []
     for event in sorted(events, key=lambda e: e.get("event_id", "")):
         event_id = str(event.get("event_id", ""))
+        event = current_by_id.get(event_id, event)
         kind = str(event.get("kind", "event"))
         text = str(event.get("text", ""))
         git = event.get("git") if isinstance(event.get("git"), dict) else {}
@@ -1852,17 +1855,76 @@ def _event_order(event: dict[str, Any]) -> tuple[int, str]:
 
 def _compact_event_view(event: dict[str, Any], why: str) -> dict[str, Any]:
     git = event.get("git") if isinstance(event.get("git"), dict) else {}
-    return {
+    record = event.get("_verified_memory_record")
+    verified = isinstance(record, dict) and event.get("_memory_read_state") == "active"
+    view = {
         "event_id": str(event.get("event_id", "")),
         "kind": str(event.get("kind", "event")),
         "source": str(event.get("source", "")),
         "tags": [str(t) for t in event.get("tags", [])],
-        "text": str(event.get("text", ""))[:1000],
+        "text": record["statement"] if verified else str(event.get("text", ""))[:1000],
         "git": {k: git.get(k) for k in ("git_branch", "git_commit_short_hash", "git_commit_subject") if k in git},
         "why_current": why,
         "semantic_event_hash": str(event.get("semantic_event_hash", "")),
         "verification_state": event.get("_memory_read_state", "legacy_unverified_abstraction"),
     }
+    if verified:
+        from .memory_trust import candidate_content_hash
+        for field in ("memory_id", "scope", "policy_class", "applies_when", "does_not_apply_when",
+                      "valid_from", "valid_until", "source_event_ids", "source_artifact_hashes", "counterexample_ids", "record_hash"):
+            view[field] = copy.deepcopy(record[field])
+        view["candidate_hash"] = candidate_content_hash(record)
+        view["support_receipt_hash"] = stable_json_hash(record["support_receipt"])
+        view["source_bindings"] = copy.deepcopy(record["support_receipt"]["evidence"])
+    return view
+
+
+def _typed_memory_envelope(event: dict[str, Any], by_id: dict[str, dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    """Validate unsigned routing fields against the signed record; never repair history."""
+    from .memory_integrity import validate_memory_record
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict) or "memory_record" not in metadata:
+        return None
+    try:
+        record = validate_memory_record(metadata["memory_record"])
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ValueError("typed_memory_envelope_record_invalid") from exc
+    allowed_metadata = {"memory_record", "consolidation_receipt", "supersession_receipts", "active_abstraction", "historical_events_rewritten"}
+    if set(metadata) - allowed_metadata:
+        raise ValueError("typed_memory_envelope_metadata_override")
+    allowed_event = {"schema", "event_id", "kind", "source", "tags", "text", "supersedes", "metadata", "git", "semantic_event_hash"}
+    if set(event) - allowed_event:
+        raise ValueError("typed_memory_envelope_unknown_field")
+    active = record["verification_state"] == "active"
+    quarantined = record["verification_state"] == "quarantined"
+    if not active and not quarantined:
+        raise ValueError("typed_memory_envelope_state_invalid")
+    expected_kind = record["kind"] if active else "memory_candidate_quarantined"
+    expected_text = record["statement"] if active else "Quarantined memory candidate: " + record["statement"]
+    expected_tags = sorted({"mcp36", "typed_memory", record["policy_class"], record["scope"]})
+    for key, expected in (("kind", expected_kind), ("text", expected_text), ("source", "mcp36_consolidation_gate"), ("tags", expected_tags)):
+        if event.get(key) != expected:
+            raise ValueError("typed_memory_envelope_" + key + "_mismatch")
+    if metadata.get("active_abstraction") is not active or metadata.get("historical_events_rewritten") is not False:
+        raise ValueError("typed_memory_envelope_authority_mismatch")
+    targets = list(record["supersedes"]) if active else []
+    if by_id:
+        aliases: dict[str, list[str]] = {}
+        for event_id, target in by_id.items():
+            prior = _event_metadata(target).get("memory_record")
+            if isinstance(prior, dict) and isinstance(prior.get("memory_id"), str):
+                aliases.setdefault(prior["memory_id"], []).append(event_id)
+        resolved = []
+        for target in targets:
+            matches = [target] if target in by_id else aliases.get(target, [])
+            if len(matches) != 1:
+                raise ValueError("typed_memory_envelope_supersedes_unresolved")
+            resolved.append(matches[0])
+        targets = resolved
+    outer_targets = event.get("supersedes")
+    if (outer_targets or []) != targets or (outer_targets is not None and not isinstance(outer_targets, list)):
+        raise ValueError("typed_memory_envelope_supersedes_mismatch")
+    return record
 
 
 def _event_matches(event: dict[str, Any], patterns: list[str]) -> bool:
@@ -1882,15 +1944,28 @@ def _active_events(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
     from .memory_trust import load_runtime_trust_policy
 
     superseded: set[str] = set()
-    by_id = {str(event.get("event_id", "")): event for event in events}
+    seen_ids: set[str] = set()
+    duplicate_ids: set[str] = set()
+    for event in events:
+        event_id = str(event.get("event_id", ""))
+        if event_id in seen_ids:
+            duplicate_ids.add(event_id)
+        seen_ids.add(event_id)
+    by_id = {str(event.get("event_id", "")): event for event in events if str(event.get("event_id", "")) not in duplicate_ids}
     source_contents = {"event:" + key: value for key, value in by_id.items()}
     policy = load_runtime_trust_policy()
     eligible = []
     for original in events:
-        event = dict(original)
+        if str(original.get("event_id", "")) in duplicate_ids:
+            continue
+        event = {key: value for key, value in original.items() if not key.startswith("_")}
         metadata = event.get("metadata")
         record = metadata.get("memory_record") if isinstance(metadata, dict) else None
-        if isinstance(record, dict):
+        if isinstance(metadata, dict) and "memory_record" in metadata:
+            try:
+                record = _typed_memory_envelope(original, by_id)
+            except ValueError:
+                continue
             # Recheck signatures/content/time on read. Old active labels and
             # archived gate booleans never acquire new trust automatically.
             if record.get("verification_state") != "active":
@@ -1899,7 +1974,12 @@ def _active_events(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
                 source_contents=source_contents, trust_policy=policy)
             if not gate["accepted"]:
                 continue
+            # Only canonical signed/routable content enters active indexes/views.
+            # Git metadata remains in append-only history and carries no typed authority.
+            event.pop("git", None)
+            event["text"], event["kind"] = record["statement"], record["kind"]
             event["_memory_read_state"] = "active"
+            event["_verified_memory_record"] = record
         eligible.append(event)
     for event in eligible:
         value = event.get("supersedes")
@@ -2229,18 +2309,23 @@ def _archive_safe_git_metadata(git: dict[str, Any]) -> dict[str, Any]:
 def _validate_append_only_events(events: list[dict[str, Any]]) -> list[str]:
     errors: list[str] = []
     seen: dict[str, str] = {}
+    by_id = {str(event.get("event_id", "")): event for event in events}
     for event in events:
         event_id = event.get("event_id")
         if not isinstance(event_id, str) or not event_id:
             errors.append("missing_event_id")
             continue
         semantic_hash = event.get("semantic_event_hash")
-        if event_id in seen and seen[event_id] != semantic_hash:
+        if event_id in seen:
             errors.append(f"duplicate_event_id_conflict:{event_id}")
         seen[event_id] = str(semantic_hash)
         text = event.get("text")
         if isinstance(text, str) and redaction_block_reason(text):
             errors.append(f"secret_like_event_text:{event_id}")
+        try:
+            _typed_memory_envelope(event, by_id)
+        except ValueError as exc:
+            errors.append(f"{exc}:{event_id}")
     return errors
 
 
@@ -2260,7 +2345,8 @@ def _secret_like_payload_paths(value: Any, path: str = "$") -> list[str]:
     return paths
 
 
-def _validate_new_event_payload(event: dict[str, Any]) -> None:
+def _validate_new_event_payload(event: dict[str, Any], source_events: list[dict[str, Any]] | None = None) -> None:
+    _typed_memory_envelope(event, {str(row.get("event_id", "")): row for row in source_events} if source_events is not None else None)
     paths = _secret_like_payload_paths(
         {
             "kind": event.get("kind"),
@@ -2486,7 +2572,7 @@ def archive_append_events(
                 event["metadata"] = sanitize_json_value(metadata)
             if git is not None:
                 event["git"] = git
-            _validate_new_event_payload(event)
+            _validate_new_event_payload(event, events)
             event["semantic_event_hash"] = stable_json_hash(
                 {
                     "kind": kind,
@@ -3007,6 +3093,45 @@ CURRENT_PROJECTION_SECTIONS = (
 )
 
 
+def _projection_source_evidence(sections: dict[str, list[dict[str, Any]]], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deliver the exact signed source objects, with explicit bounded omissions."""
+    by_id = {str(event.get("event_id", "")): event for event in events}
+    requested: dict[str, dict[str, Any]] = {}
+    for items in sections.values():
+        for item in items:
+            if item.get("verification_state") != "active":
+                continue
+            for binding in item.get("source_bindings", []):
+                source_id = binding["id"]
+                row = requested.setdefault(source_id, {"id": source_id, "kind": "archive_event",
+                    "content_sha256": binding["sha256"], "claim_ids": [],
+                    "verification_basis": "signed_memory_source_binding"})
+                if row["content_sha256"] != binding["sha256"]:
+                    row["conflicting_bindings"] = True
+                if item["event_id"] not in row["claim_ids"]:
+                    row["claim_ids"].append(item["event_id"])
+    delivered_bytes = 0
+    for source_id, row in sorted(requested.items()):
+        source = by_id.get(source_id.removeprefix("event:")) if source_id.startswith("event:") else None
+        row["runtime_verified"] = source is not None and not row.get("conflicting_bindings") and stable_json_hash(source) == row["content_sha256"]
+        row["content_delivered"] = False
+        if not row["runtime_verified"]:
+            row["delivery_error"] = "signed_source_missing_or_changed"
+            continue
+        content = dumps(source)
+        size = len(content.encode("utf-8"))
+        row["content_bytes"] = size
+        if _secret_like_payload_paths(source):
+            row["delivery_error"] = "source_content_redaction_required"
+        elif size > 16384 or delivered_bytes + size > 131072:
+            row["delivery_error"] = "source_content_budget_exceeded"
+        else:
+            row["content_text"] = content
+            row["content_delivered"] = True
+            delivered_bytes += size
+    return [requested[key] for key in sorted(requested)]
+
+
 def native_archive_current_projection(
     project: Path,
     query: str = "",
@@ -3021,7 +3146,8 @@ def native_archive_current_projection(
     zone = resolve_memory_zone(project, memory_zone, memory_zone_path)
     active_root = Path(zone.active_root)
     # A persisted projection cannot decide current validity or signer revocation.
-    synthesis = _derive_memory_synthesis(_memory_events(active_root, native_exe))
+    events = _memory_events(active_root, native_exe)
+    synthesis = _derive_memory_synthesis(events)
     terms = [term for term in query_terms(query) if term not in {"checkpoint", "type"}]
 
     def compact(item: dict[str, Any]) -> dict[str, Any]:
@@ -3033,10 +3159,14 @@ def native_archive_current_projection(
                 "kind": item.get("kind"),
                 "source": item.get("source"),
                 "tags": item.get("tags", []),
-                "text": text[:600],
+                "text": text if item.get("verification_state") == "active" else text[:600],
                 "why_current": item.get("why_current"),
                 "semantic_event_hash": item.get("semantic_event_hash"),
                 "verification_state": item.get("verification_state", "legacy_unverified_abstraction"),
+                **{key: copy.deepcopy(item[key]) for key in (
+                    "memory_id", "scope", "policy_class", "applies_when", "does_not_apply_when",
+                    "valid_from", "valid_until", "source_event_ids", "source_artifact_hashes",
+                    "counterexample_ids", "record_hash", "candidate_hash", "support_receipt_hash", "source_bindings") if key in item},
             }.items()
             if value not in (None, "", [])
         }
@@ -3068,6 +3198,7 @@ def native_archive_current_projection(
         "query_terms": terms[:24],
         "memory_synthesis_hash": synthesis.get("memory_synthesis_hash"),
         "sections": sections,
+        "source_evidence": _projection_source_evidence(sections, events),
         "stale_history_excluded": True,
         "supersession_applied": True,
     }

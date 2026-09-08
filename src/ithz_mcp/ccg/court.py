@@ -552,6 +552,9 @@ def _load_final_review_manifest(
         "command_outputs_runtime_verified": schema.endswith("_v2") and all(
             bool(row.get("output_runtime_verified")) for row in verified_receipts
         ),
+        # Internal resolver only. build_evidence_views rereads each bounded
+        # artifact and recomputes its hash before delivery to any role.
+        "_content_root": str(project.resolve()),
     }
 
 

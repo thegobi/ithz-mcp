@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,9 +14,11 @@ from ithz_mcp.memory_integrity import (
     sealed_evidence_for_role,
     validate_memory_record,
     validate_supersession,
+    _manifest_raw_evidence,
 )
 from ithz_mcp.native_archive_store import archive_append_memory_record
 from ithz_mcp.mcp_server import RpcError, call_tool, mcp_tool_schemas
+from ithz_mcp.ccg.court import _load_final_review_manifest, _role_prompt
 
 
 class MemoryIntegrityTests(unittest.TestCase):
@@ -149,6 +153,114 @@ class MemoryIntegrityTests(unittest.TestCase):
         self.assertEqual(row["raw_evidence_ids"], ["gate"])
         self.assertTrue(row["binding_complete"])
         self.assertEqual(first["evidence_content_hashes"], second["evidence_content_hashes"])
+
+    def test_signed_source_evidence_delivers_exact_content_to_judge(self):
+        projection = self.projection()
+        payload = '{"event_id":"gate","outcome":"passed"}'
+        projection["source_evidence"] = [{
+            "id": "event:gate", "kind": "archive_event", "content_text": payload,
+            "content_bytes": len(payload.encode("utf-8")),
+            "content_sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+            "runtime_verified": True, "verification_basis": "signed_memory_source_binding",
+            "claim_ids": ["decision"],
+        }]
+        projection["sections"]["current_decisions"] = [{"event_id": "decision", "text": "Use verified evidence.", "source_event_ids": ["gate"], "source_bindings": {"event:gate": {"sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest()}}}]
+        compiled = build_evidence_views(projection)
+        raw = compiled["views"]["judge"]["raw_evidence"][0]
+        self.assertTrue(raw["content_verified"])
+        self.assertTrue(raw["content_delivered_to_role"])
+        self.assertEqual(raw["content_text"], payload)
+        self.assertEqual(compiled["views"]["judge"]["claim_evidence_matrix"][0]["raw_evidence_ids"], ["event:gate"])
+
+    def test_changed_or_oversize_signed_payload_fails_closed(self):
+        projection = self.projection()
+        projection["source_evidence"] = [{
+            "id": "event:gate", "kind": "archive_event", "content_text": "changed",
+            "content_sha256": "0" * 64, "content_bytes": 7, "runtime_verified": True,
+        }, {
+            "id": "event:risk", "kind": "archive_event", "content_text": "x" * (16 * 1024 + 1),
+            "content_bytes": 16 * 1024 + 1, "content_sha256": hashlib.sha256(("x" * (16 * 1024 + 1)).encode()).hexdigest(), "runtime_verified": True,
+        }]
+        raw = build_evidence_views(projection)["views"]["proposer"]["raw_evidence"]
+        self.assertEqual([row["delivery_failure_reason"] for row in raw], ["content_hash_mismatch", "content_oversize"])
+        self.assertFalse(any(row["content_verified"] for row in raw))
+
+    def test_signed_source_requires_declared_byte_count_and_claim_binding(self):
+        projection = self.projection()
+        payload = "event bytes"
+        projection["source_evidence"] = [{
+            "id": "event:gate", "kind": "archive_event", "content_text": payload,
+            "content_bytes": 1, "content_sha256": hashlib.sha256(payload.encode()).hexdigest(),
+            "runtime_verified": True, "claim_ids": ["another-claim"],
+        }]
+        projection["sections"]["current_decisions"] = [{"event_id": "decision", "text": "Claim", "source_event_ids": ["gate"]}]
+        compiled = build_evidence_views(projection)
+        raw = compiled["views"]["judge"]["raw_evidence"][0]
+        self.assertEqual(raw["delivery_failure_reason"], "content_bytes_mismatch")
+        self.assertFalse(compiled["views"]["judge"]["claim_evidence_matrix"][0]["binding_complete"])
+
+    def test_oversize_integrity_checks_hash_before_withholding(self):
+        content = "x" * (16 * 1024 + 1)
+        good = hashlib.sha256(content.encode()).hexdigest()
+        projection = {"source_evidence": [{"id": "event:oversize", "kind": "archive_event", "content_text": content, "content_bytes": len(content.encode()), "content_sha256": good, "runtime_verified": True}]}
+        row = build_evidence_views(projection)["views"]["proposer"]["raw_evidence"][0]
+        self.assertEqual(row["delivery_failure_reason"], "content_oversize")
+        self.assertTrue(row["source_integrity_verified"])
+        projection["source_evidence"][0]["content_sha256"] = "0" * 64
+        row = build_evidence_views(projection)["views"]["proposer"]["raw_evidence"][0]
+        self.assertEqual(row["delivery_failure_reason"], "content_hash_mismatch")
+        self.assertFalse(row["source_integrity_verified"])
+
+    def test_oversize_manifest_artifact_hash_is_checked_before_withholding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); artifact = root / "big.txt"; artifact.write_text("z" * (16 * 1024 + 1), encoding="utf-8")
+            good = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            manifest = {"command_outputs_runtime_verified": True, "_content_root": str(root), "artifacts": [{"path": "big.txt", "sha256": good}], "command_receipts": []}
+            row = _manifest_raw_evidence(manifest)[0]
+            self.assertEqual(row["delivery_failure_reason"], "content_oversize")
+            self.assertTrue(row["artifact_integrity_verified"])
+            manifest["artifacts"][0]["sha256"] = "0" * 64
+            row = _manifest_raw_evidence(manifest)[0]
+            self.assertEqual(row["delivery_failure_reason"], "content_hash_mismatch")
+            self.assertFalse(row["artifact_integrity_verified"])
+
+    def test_same_payload_with_distinct_evidence_ids_keeps_both_bindings(self):
+        payload = "same payload"; digest = hashlib.sha256(payload.encode()).hexdigest()
+        projection = self.projection()
+        projection["source_evidence"] = [
+            {"id": "event:one", "kind": "archive_event", "content_text": payload, "content_bytes": len(payload), "content_sha256": digest, "runtime_verified": True, "claim_ids": ["decision"]},
+            {"id": "event:two", "kind": "archive_event", "content_text": payload, "content_bytes": len(payload), "content_sha256": digest, "runtime_verified": True, "claim_ids": ["decision"]},
+        ]
+        projection["sections"]["current_decisions"] = [{"event_id": "decision", "text": "Claim", "source_event_ids": ["one", "two"], "source_bindings": [{"id": "event:one", "sha256": digest}, {"id": "event:two", "sha256": digest}]}]
+        matrix = build_evidence_views(projection)["views"]["judge"]["claim_evidence_matrix"][0]
+        self.assertEqual(matrix["raw_evidence_ids"], ["event:one", "event:two"])
+        self.assertTrue(matrix["binding_complete"])
+
+    def test_runtime_validated_manifest_rereads_artifact_before_role_prompt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "receipt.txt"; artifact.write_text("bounded test receipt", encoding="utf-8")
+            output = root / "output.txt"; output.write_text("bounded command output", encoding="utf-8")
+            digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+            manifest = {
+                "schema": "ccg_final_review_manifest_v2", "memory_synthesis_hash": "a" * 64,
+                "artifacts": [{"path": "receipt.txt", "sha256": digest(artifact)}],
+                "command_receipts": [{"command": "test", "exit_code": 0, "output_sha256": digest(output), "result_summary": "passed", "output_artifact_path": "output.txt", "started_at": "now", "finished_at": "now", "working_directory": str(root), "tool_version": "1", "environment_fingerprint": "b" * 64}],
+            }
+            manifest_path = root / "manifest.json"; manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            validated = _load_final_review_manifest(root, "manifest.json", "a" * 64)
+            compiled = build_evidence_views(self.projection(), validated)
+            evidence = {"evidence_hash": "e" * 64, "evidence_views": compiled, "decision_material": {}, "final_review_manifest": validated}
+            judge_prompt, _ = _role_prompt("judge", evidence, {"proposal": {}, "opponent_1": {}, "opponent_2": {}}, {}, {})
+            primary_prompt, _ = _role_prompt("opponent_primary", evidence, {"proposal": {}}, {}, {})
+            cross_prompt, _ = _role_prompt("opponent_cross", evidence, {"proposal": {}}, {}, {})
+            for prompt in (judge_prompt, primary_prompt, cross_prompt):
+                self.assertIn("bounded test receipt", prompt)
+                self.assertIn("bounded command output", prompt)
+                self.assertNotIn("_content_root", prompt)
+            artifact.write_text("changed after validation", encoding="utf-8")
+            changed = build_evidence_views(self.projection(), validated)
+            self.assertFalse(changed["views"]["judge"]["raw_evidence"][0]["content_verified"])
 
     def test_benchmark_covers_all_memory_modes(self):
         result = run_memory_integrity_benchmark()
