@@ -1,10 +1,14 @@
-# ITHZ-MCP 36.6 public core
+# ITHZ-MCP 37.1 public core
 
 ITHZ-MCP is a local-first project-memory server for AI coding agents. MCP36 adds source-bound memory influence receipts, typed evidence views and deterministic safety checks. MCP36.4 adds an explicitly enabled, bounded shadow canary for evaluating those controls before they are trusted on consequential work.
 
 This repository contains the generic public core. It intentionally excludes organization-specific constitutions and profiles, customer or participant data, private project archives, case ledgers, provider settings, credentials, logs and internal operating documents.
 
-## What MCP36.6 repairs
+## New in MCP37.1
+
+Opt-in exact-diff independent code review, lossless multipart review with mandatory integration, and explicit one-use recovery with sanitized provider diagnostics. See [usage and limits](docs/MCP37_1_CODE_REVIEW.md).
+
+## Retained MCP36.6 repairs
 
 MCP36.6 binds active displayed text and routing to the signed record, delivers bounded verified artifact content to opponents and the judge, and preserves signed source references through native projection into the claim matrix. Integrity verification is separate from actual content delivery. Missing or changed evidence cannot complete a binding. See [end-to-end integrity](docs/MCP36_6_END_TO_END_INTEGRITY.md).
 
@@ -21,7 +25,7 @@ MCP36.5 separates source binding, signed evidence support and activation authori
 - Canary cases are fixed to `analysis.read`, require an independent cross-lab opponent and complete usage telemetry, mint no capability token and are not mirrored into `project.ithz`.
 - A local kill switch pauses new canary cases while preserving existing receipts.
 
-MCP36.6 remains alpha software. A passing canary is review evidence, not permission to deploy, publish, send messages, change payments or perform another external action.
+MCP37.1 remains alpha software. A passing canary is review evidence, not permission to deploy, publish, send messages, change payments or perform another external action.
 
 ## Install from the GitHub release
 
@@ -29,7 +33,7 @@ Download the wheel and `SHA256SUMS.txt` from the release, verify the checksum, t
 
 ```powershell
 py -m venv .venv
-.\.venv\Scripts\python -m pip install .\ithz_mcp-0.1.0a16-py3-none-any.whl
+.\.venv\Scripts\python -m pip install .\ithz_mcp-0.1.0a20-py3-none-any.whl
 .\.venv\Scripts\ithz-mcp version
 ```
 
@@ -37,7 +41,7 @@ Linux/macOS:
 
 ```bash
 python3 -m venv .venv
-./.venv/bin/python -m pip install ./ithz_mcp-0.1.0a16-py3-none-any.whl
+./.venv/bin/python -m pip install ./ithz_mcp-0.1.0a20-py3-none-any.whl
 ./.venv/bin/ithz-mcp version
 ```
 

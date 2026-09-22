@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0a20 - 2026-09-22
+
+- Add opt-in exact-diff independent code review and freshness gates.
+- Add lossless multipart review with mandatory integration.
+- Add explicit one-use recovery preserving prior attempts and sanitized provider diagnostics.
+
 ## 0.1.0a16 - 2026-09-08
 
 - Bind typed event display/routing to verified signed content and reject duplicate identities.

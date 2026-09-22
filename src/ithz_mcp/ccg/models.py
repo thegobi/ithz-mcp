@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -20,6 +21,34 @@ from ..canonical_json import dumps
 
 class BackendError(RuntimeError):
     """A model backend failed before producing a schema-valid role result."""
+
+    def __init__(self, message: str, *, diagnostic: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.diagnostic = diagnostic or {"category": "backend_error"}
+
+
+def safe_backend_diagnostic(error: Exception) -> dict[str, Any]:
+    """Closed vocabulary only: never exception text, response bodies or headers."""
+    source = getattr(error, "diagnostic", {})
+    categories = {"backend_error", "http_error", "connection_not_established", "ambiguous_transport",
+                  "response_invalid", "response_shape_invalid", "model_output_invalid", "legacy_failure_diagnostic_unavailable"}
+    result: dict[str, Any] = {"category": "backend_error"}
+    if not isinstance(source, dict):
+        return result
+    if isinstance(source.get("category"), str) and source["category"] in categories:
+        result["category"] = source["category"]
+    status = source.get("http_status")
+    if type(status) is int and 100 <= status <= 599:
+        result["http_status"] = status
+    if isinstance(source.get("provider_status"), str) and source["provider_status"] in {"INVALID_ARGUMENT", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND",
+                                         "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE",
+                                         "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED", "UNKNOWN"}:
+        result["provider_status"] = source["provider_status"]
+    return result
+
+
+class PreResponseTransportError(BackendError):
+    """Connection was never established; no model response could be accepted."""
 
 
 def _resolve_codex_app_server_executable(executable: str) -> str:
@@ -577,16 +606,34 @@ class GeminiBackend:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            response = urllib.request.urlopen(request, timeout=self.timeout_seconds)
+        except urllib.error.HTTPError as exc:
+            diagnostic = {"category": "http_error", "http_status": exc.code}
+            try:
+                error_body = json.loads(exc.read(65_536).decode("utf-8"))
+                diagnostic["provider_status"] = error_body.get("error", {}).get("status")
+            except (ValueError, OSError, AttributeError, TypeError, UnicodeError):
+                pass
+            sanitized = safe_backend_diagnostic(BackendError("http_error", diagnostic=diagnostic))
+            raise BackendError("gemini_http_error", diagnostic=sanitized) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError)):
+                raise PreResponseTransportError("gemini_connection_not_established", diagnostic={"category": "connection_not_established"}) from exc
+            raise BackendError("gemini_request_failed", diagnostic={"category": "ambiguous_transport"}) from exc
+        try:
+            with response as response:
                 body = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-            raise BackendError(f"gemini_request_failed:{type(exc).__name__}") from exc
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeError) as exc:
+            raise BackendError("gemini_response_failed", diagnostic={"category": "response_invalid"}) from exc
         try:
             parts = body["candidates"][0]["content"]["parts"]
             content = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
         except (KeyError, IndexError, TypeError) as exc:
-            raise BackendError("gemini_response_shape_invalid") from exc
-        data = _parse_json_message(content)
+            raise BackendError("gemini_response_shape_invalid", diagnostic={"category": "response_shape_invalid"}) from exc
+        try:
+            data = _parse_json_message(content)
+        except BackendError as exc:
+            raise BackendError("gemini_model_output_invalid", diagnostic={"category": "model_output_invalid"}) from exc
         if data.get("evidence_hash") != evidence_hash:
             data["_evidence_hash_mismatch"] = True
         return RoleResult(

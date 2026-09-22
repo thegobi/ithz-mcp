@@ -65,6 +65,19 @@ def tool_schemas() -> list[dict[str, Any]]:
     project = {"type": "string", "description": "Absolute or relative project root. Defaults to server project."}
     case_id = {"type": "string", "description": "CCG case identifier."}
     return [
+        *[
+            _schema(name, description, {
+                "project": project,
+                "base_ref": {"type": "string", "description": "Actual PR target ref; fetch it before review and again before the gate."},
+                "head_ref": {"type": "string", "default": "HEAD"},
+                "context_paths": {"type": "array", "items": {"type": "string"}, "description": "Tracked requirements and relevant dependency files to include in full."},
+            }, ["base_ref"])
+            for name, description in [
+                ("ccg_prepare_code_review", "MCP37: validate a clean exact PR diff and full file packet without a model call. Requires project opt-in."),
+                ("ccg_run_code_review", "MCP37: independent Gemini code review of the exact diff, with file/line findings and metered immutable receipt. No CCG court or PR write. Same packet reuses the result."),
+                ("ccg_check_pr_review", "MCP37: mandatory immediately before PR creation/update; re-read Git, policy, complete findings and receipt. Missing or stale evidence blocks. This local gate does not mediate external PR APIs."),
+            ]
+        ],
         _schema("ccg_status", "Show CCG, model fallback, constitution and ITHZ evidence status.", {"project": project}),
         _schema(
             "ccg_memory_integrity_status",
@@ -190,6 +203,14 @@ def _runner(default_project: Path, arguments: dict[str, Any]) -> CourtRunner:
 
 def call_tool(name: str, arguments: dict[str, Any], default_project: Path) -> Any:
     project = Path(str(arguments.get("project") or default_project)).resolve()
+    if name in {"ccg_prepare_code_review", "ccg_run_code_review", "ccg_check_pr_review"}:
+        from .code_review import prepare, run_review, gate
+        base_ref = arguments.get("base_ref")
+        context = arguments.get("context_paths", [])
+        if not isinstance(base_ref, str) or not base_ref or not isinstance(context, list) or any(not isinstance(p, str) for p in context):
+            raise RpcError(-32602, "invalid_code_review_arguments")
+        operation = {"ccg_prepare_code_review": prepare, "ccg_run_code_review": run_review, "ccg_check_pr_review": gate}[name]
+        return operation(project, base_ref, arguments.get("head_ref", "HEAD"), context)
     if name == "ccg_initialize_project":
         return initialize_project(project, bool(arguments.get("overwrite", False)))
     if name == "ccg_status":

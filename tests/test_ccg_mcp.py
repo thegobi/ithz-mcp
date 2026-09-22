@@ -14,6 +14,9 @@ class CCGMCPTests(unittest.TestCase):
         self.assertEqual(
             names,
             {
+                "ccg_prepare_code_review",
+                "ccg_run_code_review",
+                "ccg_check_pr_review",
                 "ccg_status",
                 "ccg_memory_integrity_status",
                 "ccg_memory_integrity_selftest",
