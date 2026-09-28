@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = "0.1.0a20"
-BUILD_ID = "public-mcp37.1-audited-recovery.20260922.1"
+VERSION = "0.1.0a21"
+BUILD_ID = "public-mcp38-development-workflow.20260928.1"
 PACKAGE_NAME = "ithz-mcp"
-PACKAGE_FILENAME = "ithz_mcp-0.1.0a20-py3-none-any.whl"
+PACKAGE_FILENAME = "ithz_mcp-0.1.0a21-py3-none-any.whl"
 PRODUCT = "ITHZ-MCP / ITHZ ContextDB"
 
 

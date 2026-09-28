@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import version_info
+from . import development_workflow
 from .agent_history_import import archive_import_agent_history, discover_agent_history
 from .agent_intake import first_project_agent_intake
 from .canonical_json import dump_pretty, dumps
@@ -1043,11 +1044,42 @@ def run_stage(stage: str) -> int:
     return 0 if ok else 5
 
 
+def command_development_workflow(args: argparse.Namespace) -> int:
+    params = {key: getattr(args, key) for key in ("workflow_id", "attempt_id", "check_id", "store_root", "goal", "allowed_paths", "checks", "final_action", "execution_authorized") if hasattr(args, key) and getattr(args, key) is not None}
+    if getattr(args, "contract", None):
+        params["contract"] = json.loads(Path(args.contract).read_text(encoding="utf-8"))
+        for key in ("goal", "allowed_paths", "checks", "final_action"):
+            params.pop(key, None)
+    result = development_workflow.dispatch(args.command.removeprefix("workflow-"), require_project(args.project), params)
+    emit(result)
+    return 5 if result.get("state") in {"blocked", "correcting"} else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ithz-mcp", description="Local deterministic agent work memory CLI.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("version").set_defaults(func=command_version)
+
+    for action in ("plan", "prepare", "status", "begin-step", "record-result", "run-check", "record-review", "resume", "cancel", "memory-summary"):
+        p = sub.add_parser("workflow-" + action)
+        p.add_argument("--project", default=".")
+        p.add_argument("--store-root", help="External durable runtime storage; must be outside the checkout.")
+        if action in {"plan", "prepare"}:
+            p.add_argument("--contract", required=action == "prepare", help="Immutable ithz_workflow_contract_v1 JSON file.")
+        if action == "plan":
+            p.add_argument("--goal")
+            p.add_argument("--allowed-path", dest="allowed_paths", action="append", default=[])
+            p.add_argument("--check", dest="checks", action="append", default=[])
+            p.add_argument("--final-action", default="handoff")
+        if action not in {"plan", "prepare"}:
+            p.add_argument("--workflow-id", required=True)
+        if action == "record-result":
+            p.add_argument("--attempt-id", required=True)
+        if action == "run-check":
+            p.add_argument("--check-id", required=True)
+            p.add_argument("--execution-authorized", action="store_true", help="Assert actual existing host/user authority for this registered command; does not itself grant authority.")
+        p.set_defaults(func=command_development_workflow)
 
     p = sub.add_parser("init-project")
     p.add_argument("--project", default=".")

@@ -20,6 +20,12 @@ When a new agent thread opens in this project, start here before broad codebase 
 5. After meaningful work, append a decision, gate, prompt summary or context event through ITHZ-MCP.
 6. For non-trivial work, finish with `archive-finalize-task` so documentation impact, memory impact, gates and next steps are preserved in `project.ithz`.
 
+## Task workflow intake
+
+For every new task, first propose its concrete workflow with `ithz_workflow_plan` (CLI: `workflow-plan --goal "<task>"`). Include steps, advisory agent roles, dependencies, acceptance checks, bounded repair loops, and approval boundaries. Present the plan and execute within existing authorization; routine authorized work needs no separate plan approval.
+
+The host performs implementation and agent dispatch. MCP38 offers an optional durable sequential coordinator (`workflow-prepare`, `workflow-status`, `workflow-resume`, `workflow-cancel`) with an immutable contract. Its local check runner is opt-in and requires actual host permission. It does not start background agents, grant model/export permission, or execute publication, merge or deployment. A prepared handoff is not an executed final action. Keep live state outside tracked code; append only sanitized checkpoint summaries to `project.ithz`.
+
 CLI fallback:
 
 ```powershell
@@ -50,6 +56,8 @@ This repository uses ITHZ-MCP for long-term agent memory.
 - Start with `python -m ithz_mcp context-status --project .`.
 - Request a focused context pack before broad edits.
 - Check decisions, gates, risks and next steps.
+- First propose each new task's workflow: steps, advisory agent roles, dependencies, acceptance checks, bounded repair loops and approval boundaries. Use `ithz_workflow_plan` or `workflow-plan --goal "<task>"`.
+- Execute within existing host/user authorization without a separate approval for routine authorized planning. Role recommendations do not authorize agent spawning. MCP38 coordinates evidence; the host executes work.
 - After a task, write a context commit or checkpoint summary.
 - Do not index secrets.
 - Do not duplicate long-term agent memory in repo Markdown unless it is human-facing.

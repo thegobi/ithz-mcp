@@ -19,6 +19,7 @@ from .rag import RAG_PACK_SCHEMA, compile_rag_context_pack, rag_search, rag_stat
 from .storage import state_dir
 from .task_checkpoint import archive_finalize_task, archive_ingest_project_memory, queue_archive_finalize_task, should_queue_checkpoint
 from .workflow_profiles import archive_adopt_project_workflow, archive_update_workflow_profile, workflow_context_pack, workflow_profile_status
+from . import development_workflow
 
 MAX_RESPONSE_BYTES = 65536
 MAX_CONTEXT_PACK_BYTES = 12000
@@ -28,6 +29,9 @@ MEMORY_FIRST_INSTRUCTIONS = (
     "ithz_workflow_profile_status, then ithz_focus_context_pack for the task. Use its working set first; request "
     "ithz_archive_get_context_pack or ithz_get_context_pack only when fallback_required is true or direct evidence is still missing. "
     "Do not treat ITHZ-MCP as a Git replacement, production database, cloud sync product, or universal token-saving system."
+    " At each new task, first propose its concrete workflow with ithz_workflow_plan: task steps, advisory agent roles, dependencies, checks, bounded repair loops and approval boundaries."
+    " Present that plan, then execute within existing host/user authorization; routine authorized work needs no extra plan approval."
+    " The host performs implementation and agent dispatch. MCP38 coordinates durable evidence only; it does not start background agents or grant permissions."
 )
 
 LEGACY_TOOLS = {
@@ -104,6 +108,12 @@ WRITE_TOOLS = {
 }
 
 TOOLS = LEGACY_TOOLS
+
+WORKFLOW_READ_TOOLS = {"ithz_workflow_plan", "ithz_workflow_status", "ithz_workflow_memory_summary"}
+WORKFLOW_WRITE_TOOLS = {"ithz_workflow_prepare", "ithz_workflow_begin_step", "ithz_workflow_record_result", "ithz_workflow_run_check", "ithz_workflow_record_review", "ithz_workflow_resume", "ithz_workflow_cancel"}
+LEGACY_TOOLS |= WORKFLOW_READ_TOOLS
+ARCHIVE_ONLY_TOOLS |= WORKFLOW_READ_TOOLS
+WRITE_TOOLS |= WORKFLOW_WRITE_TOOLS
 
 
 def active_tools(storage_profile: str = "legacy", server_mode: str = "read-only") -> set[str]:
@@ -505,6 +515,20 @@ def mcp_tool_schemas(storage_profile: str = "legacy", server_mode: str = "read-o
             ["pack_id"],
         ),
     ]
+    workflow_props = {"project": project_prop, "workflow_id": {"type": "string"}, "store_root": {"type": "string", "description": "Optional external runtime store, must be outside the checkout."}}
+    contract_prop = {"type": "object", "description": "Strict ithz_workflow_contract_v1. See MCP38_DEVELOPMENT_WORKFLOW.md; immutable acceptance, verifier paths, scope, check argv and finite limits."}
+    schemas.extend([
+        _tool_schema("ithz_workflow_plan", "Read-only task intake: propose concrete sequential steps, advisory roles, dependencies, checks, bounded repairs and approval boundaries. Does not grant authority or spawn agents.", {"project": project_prop, "contract": contract_prop, "goal": {"type": "string"}, "allowed_paths": {"type": "array", "items": {"type": "string"}}, "checks": {"type": "array", "items": {"type": "string"}}, "final_action": {"type": "string"}}, []),
+        _tool_schema("ithz_workflow_status", "Read-only workflow state, current evidence, remaining limits, blockers and next host action.", workflow_props, ["workflow_id"]),
+        _tool_schema("ithz_workflow_memory_summary", "Read-only sanitized checkpoint payload for explicit archive_auto_checkpoint; no raw prompts/logs or live state are written to memory.", workflow_props, ["workflow_id"]),
+        _tool_schema("ithz_workflow_prepare", "Write profile only: freeze an authorized contract and checkout baseline in external durable runtime storage. Does not start implementation or models.", {"project": project_prop, "contract": contract_prop, "store_root": workflow_props["store_root"]}, ["contract"]),
+        _tool_schema("ithz_workflow_begin_step", "Write profile only: reserve bounded host implementation/repair attempt; returns attempt identity without dispatching an agent.", workflow_props, ["workflow_id"]),
+        _tool_schema("ithz_workflow_record_result", "Write profile only: record implementation snapshot for the exact attempt. Does not accept caller-claimed test PASS.", {**workflow_props, "attempt_id": {"type": "string"}}, ["workflow_id", "attempt_id"]),
+        _tool_schema("ithz_workflow_run_check", "Write profile only, opt-in: execute one immutable registered argv with shell=False, frozen verifier, timeout and test-count evidence. Requires actual host/user permission asserted by execution_authorized=true plus allowed local_checks. Not an OS security sandbox.", {**workflow_props, "check_id": {"type": "string"}, "execution_authorized": {"type": "boolean"}}, ["workflow_id", "check_id", "execution_authorized"]),
+        _tool_schema("ithz_workflow_record_review", "Write profile only: revalidate existing MCP37 exact-diff gate. Never calls a provider or retries an unfavorable review. No external action adapter.", workflow_props, ["workflow_id"]),
+        _tool_schema("ithz_workflow_resume", "Write profile only: revalidate snapshot, contract, budget and pending attempts. Unknown interrupted check outcomes block; no blind retry or lock stealing.", workflow_props, ["workflow_id"]),
+        _tool_schema("ithz_workflow_cancel", "Write profile only: cancel future work and preserve attempt/evidence history. An active check holds a lock until its timeout; cancellation does not terminate its process tree.", workflow_props, ["workflow_id"]),
+    ])
     allowed = active_tools(storage_profile, server_mode)
     return [schema for schema in schemas if schema["name"] in allowed]
 
@@ -542,6 +566,8 @@ def call_tool(method: str, params: dict[str, Any], default_project: Path, storag
     if method not in active_tools(storage_profile, server_mode) and method not in {"ithz_record_task_summary", "ithz_context_commit", "ithz_update_after_task"}:
         raise RpcError(-32601, "unknown_method", {"method": method})
     project = _project(default_project, params)
+    if method in WORKFLOW_READ_TOOLS | WORKFLOW_WRITE_TOOLS:
+        return development_workflow.dispatch(method.removeprefix("ithz_workflow_"), project, params)
     if method == "ithz_context_status":
         return _status(project, storage_profile, server_mode)
     if method == "ithz_search_context":
@@ -830,6 +856,8 @@ def _compact_tool_structured_content(value: Any) -> dict[str, Any]:
     clean = sanitize_json_value(value)
     if not isinstance(clean, dict):
         return {"value": clean}
+    if clean.get("schema") == development_workflow.SCHEMA:
+        return clean
     update = clean.get("update") if isinstance(clean.get("update"), dict) else {}
     append = clean.get("append") if isinstance(clean.get("append"), dict) else {}
     snapshot = clean.get("snapshot") if isinstance(clean.get("snapshot"), dict) else clean.get("snapshot")

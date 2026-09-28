@@ -3,3 +3,5 @@ recursive-include docs *.md
 include fixtures/mcp36_4_retrieval_labels.json
 include experiments/mcp36_4_retrieval/run_benchmark.py
 include experiments/mcp36_4_retrieval/mcp36_4_retrieval_receipt.json
+
+recursive-include templates *.md

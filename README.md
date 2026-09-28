@@ -1,10 +1,18 @@
-# ITHZ-MCP 37.1 public core
+# ITHZ-MCP 38 public core
 
 ITHZ-MCP is a local-first project-memory server for AI coding agents. MCP36 adds source-bound memory influence receipts, typed evidence views and deterministic safety checks. MCP36.4 adds an explicitly enabled, bounded shadow canary for evaluating those controls before they are trusted on consequential work.
 
 This repository contains the generic public core. It intentionally excludes organization-specific constitutions and profiles, customer or participant data, private project archives, case ledgers, provider settings, credentials, logs and internal operating documents.
 
-## New in MCP37.1
+## New in MCP38
+
+Start a task with a concrete workflow proposal: steps, advisory agent roles, dependencies, checks, bounded repair loops and approval boundaries. The opt-in sequential local coordinator binds check evidence to a frozen task contract and checkout, preserves failures and revalidates existing MCP37 review evidence. Agents and external-action permissions remain with the host. See [usage, contract and limits](docs/MCP38_DEVELOPMENT_WORKFLOW.md).
+
+```bash
+ithz-mcp workflow-plan --project . --goal "Fix duplicate reservations" --check "Duplicate and cancellation acceptance tests"
+```
+
+## Retained MCP37.1 review
 
 Opt-in exact-diff independent code review, lossless multipart review with mandatory integration, and explicit one-use recovery with sanitized provider diagnostics. See [usage and limits](docs/MCP37_1_CODE_REVIEW.md).
 
@@ -25,7 +33,7 @@ MCP36.5 separates source binding, signed evidence support and activation authori
 - Canary cases are fixed to `analysis.read`, require an independent cross-lab opponent and complete usage telemetry, mint no capability token and are not mirrored into `project.ithz`.
 - A local kill switch pauses new canary cases while preserving existing receipts.
 
-MCP37.1 remains alpha software. A passing canary is review evidence, not permission to deploy, publish, send messages, change payments or perform another external action.
+MCP38 remains alpha software. A passing canary is review evidence, not permission to deploy, publish, send messages, change payments or perform another external action.
 
 ## Install from the GitHub release
 
@@ -33,7 +41,7 @@ Download the wheel and `SHA256SUMS.txt` from the release, verify the checksum, t
 
 ```powershell
 py -m venv .venv
-.\.venv\Scripts\python -m pip install .\ithz_mcp-0.1.0a20-py3-none-any.whl
+.\.venv\Scripts\python -m pip install .\ithz_mcp-0.1.0a21-py3-none-any.whl
 .\.venv\Scripts\ithz-mcp version
 ```
 
@@ -41,7 +49,7 @@ Linux/macOS:
 
 ```bash
 python3 -m venv .venv
-./.venv/bin/python -m pip install ./ithz_mcp-0.1.0a20-py3-none-any.whl
+./.venv/bin/python -m pip install ./ithz_mcp-0.1.0a21-py3-none-any.whl
 ./.venv/bin/ithz-mcp version
 ```
 

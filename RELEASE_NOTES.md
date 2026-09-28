@@ -1,14 +1,15 @@
-# ITHZ-MCP 37.1 (`0.1.0a20`)
+# ITHZ-MCP 38 (`0.1.0a21`)
 
-This alpha release adds opt-in independent review of an exact Git diff through `ccg_prepare_code_review`, `ccg_run_code_review` and `ccg_check_pr_review` on the CCG MCP server.
+MCP38 adds task-intake workflow planning and an opt-in bounded local coordinator. A host can propose the steps, roles, dependencies, checks and repair paths before implementation, then hand off evidence tied to the actual checkout.
 
-- Review receipts bind source/target commits, full changed files, policy and context. Missing coverage, stale evidence and P0-P2 findings block readiness.
-- Large reviews use lossless parts with individual receipts and mandatory integration. No silently truncated packet receives a PASS.
-- Explicit operator-authorized recovery consumes one permission before one provider call, retains original failures and rejects rerolling accepted results.
-- Provider diagnostics retain controlled categories/status values without raw response bodies, headers or exception text.
+- Lightweight read-only planning works without Git; durable execution requires the exact Git root and a concrete immutable task contract.
+- Registered local checks have frozen verifier paths, selected commands, minimum test counts and finite time/repair budgets. Changed source invalidates downstream evidence; failures remain recorded.
+- Existing MCP37 exact-diff review is revalidated, including missing receipts and source changes during review. The coordinator makes no model-provider calls.
+- Fresh MCP initialization and bootstrap templates expose plan-first guidance. Read-only profiles expose planning/status/summary; mutations require the write profile.
+- State is kept outside the checkout. Locks, interrupted-attempt checks and snapshot validation prevent blind continuation. The host can save a sanitized summary in project memory.
 
-Review remains disabled until configured per project. Model calls send the selected source packet to Google and require appropriate authorization. Existing project-memory APIs and the default-off canary remain available. This local gate does not enforce remote GitHub/Bitbucket APIs or grant merge/deployment authority.
+This is alpha software. Roles are advisory and execution is sequential: MCP38 does not launch coding agents, provide an OS sandbox, guarantee descendant-process termination or execute final external actions. Checks use the host's permissions and a trusted, preselected acceptance harness. `ready_for_approval` does not establish release, merge or deployment. Existing MCP37 provider/export authorization remains separate.
 
-Validation results are recorded in the release manifest. Synthetic engineering tests do not demonstrate live model quality, token savings or provider availability. Install in an isolated environment and retain the previous runtime/configuration for rollback. Native binaries, organization profiles, private archives and operational records are excluded.
+Validation counts and installed checks are recorded in `VERSION.json`. Synthetic engineering tests do not establish general model quality, cost savings or provider availability. Install in a fresh isolated environment and retain the previous configuration/runtime for rollback. The public distribution excludes native binaries, organization-specific profiles, private archives and operating records.
 
-See [setup, recovery and limitations](docs/MCP37_1_CODE_REVIEW.md).
+See [workflow usage and limits](docs/MCP38_DEVELOPMENT_WORKFLOW.md) and [retained MCP37.1 review](docs/MCP37_1_CODE_REVIEW.md).
